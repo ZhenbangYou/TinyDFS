@@ -9,8 +9,8 @@ import (
 )
 
 type iNode struct {
-	metadata common.FileMetadata
-	rwlock   *sync.RWMutex // Per-file rwlock
+	fileAttributes common.FileAttributes
+	rwlock         *sync.RWMutex // Per-file rwlock
 }
 
 type NameNode struct {
@@ -30,12 +30,12 @@ func (server *NameNode) Create(path string, success *bool) error {
 		*success = false
 		return errors.New("file exists")
 	} else {
-		metadata := common.FileMetadata{
+		metadata := common.FileAttributes{
 			Size: 0,
 		}
 		server.inodes[path] = iNode{
-			metadata: metadata,
-			rwlock:   new(sync.RWMutex),
+			fileAttributes: metadata,
+			rwlock:         new(sync.RWMutex),
 		}
 		*success = true
 		return nil
@@ -58,5 +58,13 @@ func (server *NameNode) Delete(path string, unused *bool) error {
 	defer server.globalRWLock.Unlock()
 
 	delete(server.inodes, path)
+	return nil
+}
+
+func (server *NameNode) GetAttributes(path string, fileAttributes *common.FileAttributes) error {
+	slog.Info("GetAttributes request", "path", path)
+	server.globalRWLock.RLock()
+	defer server.globalRWLock.RUnlock()
+	*fileAttributes = server.inodes[path].fileAttributes
 	return nil
 }

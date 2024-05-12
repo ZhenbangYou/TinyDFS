@@ -1,10 +1,5 @@
 package common
 
-type FileMetadata struct {
+type FileAttributes struct {
 	Size uint
-}
-
-type FileHandle struct {
-	Path string
-	MetaData FileMetadata
 }

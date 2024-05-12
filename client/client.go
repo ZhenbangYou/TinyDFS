@@ -16,12 +16,6 @@ func NewDistributedFileSystem(endpoint string) DistributedFileSystem {
 	return DistributedFileSystem{endpoint: endpoint}
 }
 
-type OpenFile struct {
-	dfs        DistributedFileSystem
-	FileHandle common.FileHandle
-	FileOffset uint
-}
-
 func (dfs *DistributedFileSystem) Create(path string) bool {
 	client, err := rpc.DialHTTP("tcp", dfs.endpoint)
 
@@ -99,5 +93,31 @@ func (dfs *DistributedFileSystem) Delete(path string) bool {
 	case <-time.After(common.RPC_TIMEOUT):
 		slog.Error("Delete RPC timeout", "DFS endpoint", dfs.endpoint, "file path", path)
 		return false
+	}
+}
+
+func (dfs *DistributedFileSystem) GetAttributes(path string) (common.FileAttributes, bool) {
+	client, err := rpc.DialHTTP("tcp", dfs.endpoint)
+
+	if err != nil {
+		slog.Error("dialing error", "error", err)
+		return common.FileAttributes{}, false
+	}
+
+	var fileAttributes common.FileAttributes
+
+	asyncRpcCall := client.Go("NameNode.GetAttributes", path, &fileAttributes, nil)
+
+	select {
+	case <-asyncRpcCall.Done:
+		if asyncRpcCall.Error != nil {
+			slog.Error("GetAttributes RPC error", "error", asyncRpcCall.Error)
+			return common.FileAttributes{}, false
+		} else {
+			return fileAttributes, true
+		}
+	case <-time.After(common.RPC_TIMEOUT):
+		slog.Error("GetAttributes RPC timeout", "DFS endpoint", dfs.endpoint, "file path", path)
+		return common.FileAttributes{}, false
 	}
 }

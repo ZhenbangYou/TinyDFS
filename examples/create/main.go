@@ -14,6 +14,12 @@ func main() {
 
 	exists := dfs.Exists(path)
 	fmt.Println("exists after create", exists)
+
+	attr, ok := dfs.GetAttributes(path)
+	if ok {
+		fmt.Println("file attributes", attr)
+	}
+
 	dfs.Delete(path)
 	exists = dfs.Exists(path)
 	fmt.Println("exists after delete", exists)
