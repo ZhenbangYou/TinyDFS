@@ -1,3 +1,5 @@
 package common
 
-const RPC_TIMEOUT_MILLIS = 1000
+import "time"
+
+const RPC_TIMEOUT = 1000 * time.Millisecond

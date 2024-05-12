@@ -8,8 +8,3 @@ type FileHandle struct {
 	Path string
 	MetaData FileMetadata
 }
-
-type OpenArgs struct {
-	Path     string
-	ReadOnly bool
-}

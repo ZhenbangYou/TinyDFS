@@ -18,7 +18,8 @@ type NameNode struct {
 	globalRWLock *sync.RWMutex // The RWLock for the entire namenode
 }
 
-func (server *NameNode) Create(path string, fileHandle *common.FileHandle) error {
+// `success` will be true iff the file doesn't exist
+func (server *NameNode) Create(path string, success *bool) error {
 	slog.Info("Create request", "path", path)
 
 	server.globalRWLock.Lock()
@@ -26,6 +27,7 @@ func (server *NameNode) Create(path string, fileHandle *common.FileHandle) error
 
 	_, exist := server.inodes[path]
 	if exist {
+		*success = false
 		return errors.New("file exists")
 	} else {
 		metadata := common.FileMetadata{
@@ -35,10 +37,26 @@ func (server *NameNode) Create(path string, fileHandle *common.FileHandle) error
 			metadata: metadata,
 			rwlock:   new(sync.RWMutex),
 		}
-		*fileHandle = common.FileHandle{
-			Path:     path,
-			MetaData: metadata,
-		}
+		*success = true
 		return nil
 	}
+}
+
+func (server *NameNode) Exists(path string, exists *bool) error {
+	slog.Info("Exists request", "path", path)
+	server.globalRWLock.RLock()
+	defer server.globalRWLock.RUnlock()
+	_, *exists = server.inodes[path]
+	return nil
+}
+
+// This RPC doesn't return anything
+func (server *NameNode) Delete(path string, unused *bool) error {
+	slog.Info("Delete request", "path", path)
+
+	server.globalRWLock.Lock()
+	defer server.globalRWLock.Unlock()
+
+	delete(server.inodes, path)
+	return nil
 }

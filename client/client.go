@@ -1,7 +1,6 @@
 package client
 
 import (
-	"fmt"
 	"log/slog"
 	"net/rpc"
 	"time"
@@ -18,32 +17,87 @@ func NewDistributedFileSystem(endpoint string) DistributedFileSystem {
 }
 
 type OpenFile struct {
+	dfs        DistributedFileSystem
 	FileHandle common.FileHandle
 	FileOffset uint
 }
 
-func (dfs *DistributedFileSystem) Create(path string) (OpenFile, error) {
+func (dfs *DistributedFileSystem) Create(path string) bool {
 	client, err := rpc.DialHTTP("tcp", dfs.endpoint)
 
 	if err != nil {
-		slog.Error("dialing error", "error:", err)
+		slog.Error("dialing error", "error", err)
+		return false
 	}
 
-	fileHandle := common.FileHandle{}
+	var success bool
 
-	asyncRpcCall := client.Go("NameNode.Create", path, &fileHandle, nil)
+	asyncRpcCall := client.Go("NameNode.Create", path, &success, nil)
 
 	select {
 	case <-asyncRpcCall.Done:
 		if asyncRpcCall.Error != nil {
-			return OpenFile{}, asyncRpcCall.Error
+			slog.Error("Create RPC error", "error", asyncRpcCall.Error)
+			return false
 		} else {
-			return OpenFile{
-				FileHandle: fileHandle,
-				FileOffset: 0,
-			}, nil
+			return success
 		}
-	case <-time.After(time.Duration(time.Duration(common.RPC_TIMEOUT_MILLIS).Milliseconds())):
-		return OpenFile{}, fmt.Errorf("Create timeout, DFS endpoint: %s, file path: %s", dfs.endpoint, path)
+	case <-time.After(common.RPC_TIMEOUT):
+		slog.Error("Create RPC timeout", "DFS endpoint", dfs.endpoint, "file path", path)
+		return false
+	}
+}
+
+func (dfs *DistributedFileSystem) Exists(path string) bool {
+	client, err := rpc.DialHTTP("tcp", dfs.endpoint)
+
+	if err != nil {
+		slog.Error("dialing error", "error", err)
+		return false
+	}
+
+	var success bool
+
+	asyncRpcCall := client.Go("NameNode.Exists", path, &success, nil)
+
+	select {
+	case <-asyncRpcCall.Done:
+		if asyncRpcCall.Error != nil {
+			slog.Error("Exists RPC error", "error", asyncRpcCall.Error)
+			return false
+		} else {
+			return success
+		}
+	case <-time.After(common.RPC_TIMEOUT):
+		slog.Error("Exists RPC timeout", "DFS endpoint", dfs.endpoint, "file path", path)
+		return false
+	}
+}
+
+// Returns whether the request succeeds, which does nothing with whether the file specified
+// by `path` exists when this request is issued
+func (dfs *DistributedFileSystem) Delete(path string) bool {
+	client, err := rpc.DialHTTP("tcp", dfs.endpoint)
+
+	if err != nil {
+		slog.Error("dialing error", "error", err)
+		return false
+	}
+
+	var success bool
+
+	asyncRpcCall := client.Go("NameNode.Delete", path, &success, nil)
+
+	select {
+	case <-asyncRpcCall.Done:
+		if asyncRpcCall.Error != nil {
+			slog.Error("Delete RPC error", "error", asyncRpcCall.Error)
+			return false
+		} else {
+			return true
+		}
+	case <-time.After(common.RPC_TIMEOUT):
+		slog.Error("Delete RPC timeout", "DFS endpoint", dfs.endpoint, "file path", path)
+		return false
 	}
 }
