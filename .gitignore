@@ -19,3 +19,9 @@
 
 # Go workspace file
 go.work
+
+# Config files
+config/namenode_endpoint.txt
+
+# Executables
+namenode/namenode
