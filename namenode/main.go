@@ -8,33 +8,57 @@ import (
 	"os"
 	"strings"
 	"sync"
+
+	"github.com/ZhenbangYou/TinyDFS/tiny-dfs/common"
 )
 
 // Command Line Args:
-// Args[1]: Path to the config file specifying namenode endpoint
+// Args[1]: Namenode endpoint (IP:port)
+// Args[2]: Optional log file path
 func main() {
-	// Set up slog
+	// Check command line arguments
+	if len(os.Args) < 2 || len(os.Args) > 3 {
+		slog.Error("expect 2 or 3 command line arguments", "actual argument count", len(os.Args))
+		os.Exit(1)
+	}
+
+	// Read and validate Namenode endpoint
+	nameNodeEndpoint := os.Args[1]
+	if !common.IsValidEndpoint(nameNodeEndpoint) {
+		slog.Error("invalid namenode endpoint", "endpoint", nameNodeEndpoint)
+		os.Exit(1)
+	}
+
+	// Set up slog to log into a file or terminal
+	var logHandler slog.Handler
 	var programLevel = new(slog.LevelVar) // Info by default
-	h := slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: programLevel})
-	slog.SetDefault(slog.New(h))
+
+	if len(os.Args) == 3 {
+		logFilePath := os.Args[2]
+		logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+		if err != nil {
+			slog.Error("failed to open log file", "error", err)
+			os.Exit(1)
+		}
+		defer logFile.Close()
+		logHandler = slog.NewJSONHandler(logFile, &slog.HandlerOptions{Level: programLevel})
+	} else {
+		logHandler = slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: programLevel})
+	}
+
+	slog.SetDefault(slog.New(logHandler))
 	programLevel.Set(slog.LevelDebug)
 
-	// Get namenode endpoint
-	if len(os.Args) != 2 {
-		slog.Error("expect 2 command line arguments", "actual argument count", len(os.Args))
-	}
-	nameNodeEndpointBytes, err := os.ReadFile(os.Args[1])
-	if err != nil {
-		slog.Error("file read error", "error", err, "path", os.Args[1])
-	}
-	nameNodeEndpoint := string(nameNodeEndpointBytes)
-	port := strings.Split(nameNodeEndpoint, ":")[1]
-
-	// Set up namenode RPC server
+	// Initialize NameNode
 	server := NameNode{
 		inodes:       make(map[string]iNode),
 		globalRWLock: new(sync.RWMutex),
+		datanodes:    make(map[string]DataNodeInfo),
 	}
+	slog.Info("Initialized namenode", "nameNodeEndpoint", nameNodeEndpoint)
+
+	// Set up namenode RPC server
+	port := strings.Split(nameNodeEndpoint, ":")[1]
 	rpc.Register(&server)
 	rpc.HandleHTTP()
 	listener, err := net.Listen("tcp", ":"+port) // Listen on all addresses
@@ -42,4 +66,8 @@ func main() {
 		slog.Error("listen error", "error", err)
 	}
 	http.Serve(listener, nil)
+
+	// Start the heartbeat monitor
+	go server.HeartbeatMonitor()
+
 }
