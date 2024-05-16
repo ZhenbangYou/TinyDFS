@@ -1,4 +1,3 @@
-// datanode/main.go
 package main
 
 import (
@@ -66,8 +65,7 @@ func main() {
 
 	// Register with Namenode
 	if !dataNode.registerWithNameNode() {
-		slog.Error("Failed to register with Namenode")
-		os.Exit(1)
+		panic("Failed to register with Namenode")
 	}
 
 	// Send initial block report

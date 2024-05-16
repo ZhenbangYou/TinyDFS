@@ -15,22 +15,23 @@ type iNode struct {
 }
 
 type DataNodeInfo struct {
-	LastTimestamp time.Time
-	isAlive       bool
+	heartbeatReceived bool // Whether received heartbeat during the last interval
+	isAlive           bool
 }
 
 type NameNode struct {
-	inodes       map[string]iNode
-	globalRWLock *sync.RWMutex // The RWLock for the entire namenode
-	datanodes    map[string]DataNodeInfo
+	inodes         map[string]iNode
+	inodeRWLock    *sync.RWMutex // The RWLock for the inodes
+	datanodeRWLock *sync.RWMutex // The RWLock for the datanodes
+	datanodes      map[string]DataNodeInfo
 }
 
 // `success` will be true iff the file doesn't exist
 func (server *NameNode) Create(path string, success *bool) error {
 	slog.Info("Create request", "path", path)
 
-	server.globalRWLock.Lock()
-	defer server.globalRWLock.Unlock()
+	server.inodeRWLock.Lock()
+	defer server.inodeRWLock.Unlock()
 
 	_, exist := server.inodes[path]
 	if exist {
@@ -51,8 +52,8 @@ func (server *NameNode) Create(path string, success *bool) error {
 
 func (server *NameNode) Exists(path string, exists *bool) error {
 	slog.Info("Exists request", "path", path)
-	server.globalRWLock.RLock()
-	defer server.globalRWLock.RUnlock()
+	server.inodeRWLock.RLock()
+	defer server.inodeRWLock.RUnlock()
 	_, *exists = server.inodes[path]
 	return nil
 }
@@ -61,8 +62,8 @@ func (server *NameNode) Exists(path string, exists *bool) error {
 func (server *NameNode) Delete(path string, unused *bool) error {
 	slog.Info("Delete request", "path", path)
 
-	server.globalRWLock.Lock()
-	defer server.globalRWLock.Unlock()
+	server.inodeRWLock.Lock()
+	defer server.inodeRWLock.Unlock()
 
 	delete(server.inodes, path)
 	return nil
@@ -70,8 +71,8 @@ func (server *NameNode) Delete(path string, unused *bool) error {
 
 func (server *NameNode) GetAttributes(path string, fileAttributes *common.FileAttributes) error {
 	slog.Info("GetAttributes request", "path", path)
-	server.globalRWLock.RLock()
-	defer server.globalRWLock.RUnlock()
+	server.inodeRWLock.RLock()
+	defer server.inodeRWLock.RUnlock()
 	*fileAttributes = server.inodes[path].fileAttributes
 	return nil
 }
@@ -79,24 +80,24 @@ func (server *NameNode) GetAttributes(path string, fileAttributes *common.FileAt
 func (server *NameNode) RegisterDataNode(dataNodeEndpoint string, success *bool) error {
 	slog.Info("RegisterDataNode request", "dataNodeEndpoint", dataNodeEndpoint)
 
-	server.globalRWLock.Lock()
-	defer server.globalRWLock.Unlock()
+	server.inodeRWLock.Lock()
+	defer server.inodeRWLock.Unlock()
 
 	// TODO: Check if the datanode is already registered
 	server.datanodes[dataNodeEndpoint] = DataNodeInfo{
-		LastTimestamp: time.Now(),
-		isAlive:       true,
+		heartbeatReceived: true,
+		isAlive:           true,
 	}
 
 	*success = true
 	return nil
 }
 
-func (server *NameNode) ReceiveBlockReport(blockReport common.BlockReport, success *bool) error {
-	slog.Info("ReceiveBlockReport request", "dataNodeEndpoint", blockReport.Endpoint)
+func (server *NameNode) ReportBlock(blockReport common.BlockReport, success *bool) error {
+	slog.Info("ReportBlock request", "dataNodeEndpoint", blockReport.Endpoint)
 
-	server.globalRWLock.Lock()
-	defer server.globalRWLock.Unlock()
+	server.inodeRWLock.Lock()
+	defer server.inodeRWLock.Unlock()
 
 	// TODO: handle block report
 
@@ -104,40 +105,47 @@ func (server *NameNode) ReceiveBlockReport(blockReport common.BlockReport, succe
 	return nil
 }
 
-func (server *NameNode) ReceiveHeartBeat(heartbeat common.Heartbeat, success *bool) error {
-	slog.Info("ReceiveHeartBeat request", "dataNodeEndpoint", heartbeat.Endpoint)
+func (server *NameNode) Heartbeat(heartbeat common.Heartbeat, success *bool) error {
+	slog.Info("Receive Heartbeat", "dataNodeEndpoint", heartbeat.Endpoint)
 
-	server.globalRWLock.Lock()
-	defer server.globalRWLock.Unlock()
+	server.inodeRWLock.Lock()
+	defer server.inodeRWLock.Unlock()
 
 	if _, exists := server.datanodes[heartbeat.Endpoint]; !exists {
 		*success = false
-		slog.Error("ReceiveHeartBeat datanode not registered", "dataNodeEndpoint", heartbeat.Endpoint)
+		slog.Error("Heartbeat datanode not registered", "dataNodeEndpoint", heartbeat.Endpoint)
 		return errors.New("datanode not registered")
 	}
 
-	// Update the last timestamp and status of the datanode
+	// Update the status of the datanode
 	server.datanodes[heartbeat.Endpoint] = DataNodeInfo{
-		LastTimestamp: time.Now(),
-		isAlive:       true,
+		heartbeatReceived: true,
+		isAlive:           true,
 	}
 
 	*success = true
 	return nil
 }
 
-func (server *NameNode) HeartbeatMonitor() {
+func (server *NameNode) heartbeatMonitor() {
 	for {
 		time.Sleep(common.HEARTBEAT_MONITOR_INTERVAL) // Check periodically
 
-		server.globalRWLock.Lock()
+		server.datanodeRWLock.Lock()
 		for endpoint, dataNode := range server.datanodes {
-			if time.Since(dataNode.LastTimestamp) > common.HEARTBEAT_TIMEOUT {
-				dataNode.isAlive = false
-				server.datanodes[endpoint] = dataNode
-				slog.Warn("DataNode timed out", "endpoint", endpoint)
+			if !dataNode.heartbeatReceived {
+				// The datanode hasn't sent a heartbeat
+				server.datanodes[endpoint] = DataNodeInfo{
+					heartbeatReceived: false,
+					isAlive:           false,
+				}
+			} else {
+				server.datanodes[endpoint] = DataNodeInfo{
+					heartbeatReceived: false,
+					isAlive:           true,
+				}
 			}
 		}
-		server.globalRWLock.Unlock()
+		server.datanodeRWLock.Unlock()
 	}
 }

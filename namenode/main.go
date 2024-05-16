@@ -51,9 +51,10 @@ func main() {
 
 	// Initialize NameNode
 	server := NameNode{
-		inodes:       make(map[string]iNode),
-		globalRWLock: new(sync.RWMutex),
-		datanodes:    make(map[string]DataNodeInfo),
+		inodes:         make(map[string]iNode),
+		inodeRWLock:    new(sync.RWMutex),
+		datanodeRWLock: new(sync.RWMutex),
+		datanodes:      make(map[string]DataNodeInfo),
 	}
 	slog.Info("Initialized namenode", "nameNodeEndpoint", nameNodeEndpoint)
 
@@ -68,6 +69,6 @@ func main() {
 	http.Serve(listener, nil)
 
 	// Start the heartbeat monitor
-	go server.HeartbeatMonitor()
+	go server.heartbeatMonitor()
 
 }

@@ -32,8 +32,11 @@ func (datanode *DataNode) registerWithNameNode() bool {
 
 		var success bool
 		err = client.Call("NameNode.RegisterDataNode", datanode.dataNodeEndpoint, &success)
-		if err != nil || !success {
+		if err != nil {
 			slog.Error("error registering with namenode", "error", err)
+			return false
+		} else if !success {
+			slog.Error("registration with namenode failed")
 			return false
 		}
 		return true
@@ -49,9 +52,12 @@ func (datanode *DataNode) sendBlockReport() bool {
 
 	blockReport := datanode.generateBlockReport()
 	var success bool
-	err = client.Call("NameNode.ReceiveBlockReport", blockReport, &success)
-	if err != nil || !success {
+	err = client.Call("NameNode.ReportBlock", blockReport, &success)
+	if err != nil {
 		slog.Error("error sending block report to namenode", "error", err)
+		return false
+	} else if !success {
+		slog.Error("block report rejected by namenode")
 		return false
 	}
 	return true
@@ -73,7 +79,7 @@ func (datanode *DataNode) heartbeatLoop() {
 		}
 
 		var success bool
-		err = client.Call("NameNode.ReceiveHeartBeat", heartbeat, &success)
+		err = client.Call("NameNode.Heartbeat", heartbeat, &success)
 
 		if err != nil || !success {
 			slog.Error("error sending heartbeat to namenode", "error", err)
