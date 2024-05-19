@@ -35,7 +35,8 @@ func main() {
 
 	if len(os.Args) == 3 {
 		logFilePath := os.Args[2]
-		logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+		// Set file permissions to allow Read and Write for the owner
+		logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 		if err != nil {
 			slog.Error("failed to open log file", "error", err)
 			os.Exit(1)

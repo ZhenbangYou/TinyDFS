@@ -27,7 +27,7 @@ NAMENODE_ENDPOINT=$(cat "$NAMENODE_CONFIG")
 ./namenode/namenode.exe "$NAMENODE_ENDPOINT" "./$LOG_DIR/namenode.log" &
 
 # Sleep for 1 second to allow Namenode to start
-sleep 1
+# sleep 1
 
 # Start Datanodes
 ID=1
