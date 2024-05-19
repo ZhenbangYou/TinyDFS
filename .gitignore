@@ -22,6 +22,14 @@ go.work
 
 # Config files
 config/namenode_endpoint.txt
+config/datanode_endpoints.txt
 
 # Executables
 namenode/namenode
+datanode/datanode
+
+# Log files
+*.log
+
+# Datanode test files
+datanode_data/*
