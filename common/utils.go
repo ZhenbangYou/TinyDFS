@@ -24,6 +24,7 @@ func ConstructBlockName(fileName string, blockID uint, versionID uint) string {
 	return fmt.Sprintf("%s_%d_%d", fileName, blockID, versionID)
 }
 
+// Parse blockName and returns fileName, blockID, versionID, and potential error
 func ParseBlockName(blockName string) (string, uint, uint, error) {
 	parts := strings.Split(blockName, "_")
 	// the last part is the versionID

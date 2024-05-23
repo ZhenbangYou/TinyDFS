@@ -166,14 +166,14 @@ func (datanode *DataNode) ReadBlock(args *common.ReadBlockRequest, response *com
 	defer file.Close()
 
 	// Seek to the start offset
-	_, err = file.Seek(int64(args.ByteOffset[0]), 0)
+	_, err = file.Seek(int64(args.BeginOffset), 0)
 	if err != nil {
 		slog.Error("error when seek to the start offset", "error", err)
 		return err
 	}
 
 	// Ensure response.Data is of sufficient size
-	numBytes := args.ByteOffset[1] - args.ByteOffset[0]
+	numBytes := args.EndOffset - args.BeginOffset
 	if len(response.Data) < int(numBytes) {
 		response.Data = make([]byte, numBytes)
 	} else {

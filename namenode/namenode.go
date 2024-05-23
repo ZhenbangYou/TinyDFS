@@ -262,14 +262,13 @@ func (server *NameNode) ReadRequest(args *common.ReadFileRequest, reply *common.
 		return errors.New("file not found")
 	}
 
-	// TODO: if DataNode status changed during request, the client should resend the request
-	dataNodesStatus := server.getDataNodesStatus()
+	dataNodesStatus := server.getDataNodeLiveness()
 
 	inode.rwlock.RLock()
 	defer inode.rwlock.RUnlock()
 
 	var blockInfoList []common.BlockInfo
-	for i := args.BlockRange[0]; i < args.BlockRange[1]; i++ {
+	for i := args.BeginBlock; i < args.EndBlock; i++ {
 		storageInfo, exist := inode.storageInfo[i]
 		if !exist {
 			reply.Succeeded = false
@@ -321,8 +320,8 @@ func (server *NameNode) ReadRequest(args *common.ReadFileRequest, reply *common.
 	return nil
 }
 
-// Returns the status of all datanodes
-func (server *NameNode) getDataNodesStatus() map[string]bool {
+// Returns the liveness status of all datanodes
+func (server *NameNode) getDataNodeLiveness() map[string]bool {
 	server.datanodeRWLock.RLock()
 	defer server.datanodeRWLock.RUnlock()
 

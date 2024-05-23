@@ -23,7 +23,7 @@ mkdir -p "$DATANODE_DIR"
 mkdir -p "$LOG_DIR"
 
 # Write Datanode test files
-python ./scripts/write_test_file.py --file_path test
+python ./scripts/write_test_file.py --file_path test --block_num 1
 python ./scripts/write_test_file.py --file_path test_dir/test2
 
 # Start Namenode

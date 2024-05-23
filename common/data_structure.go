@@ -17,9 +17,11 @@ type Heartbeat struct {
 	Endpoint string
 }
 
+// Request to read a file with the specified name and block range [BeginBlock, EndBlock)
 type ReadFileRequest struct {
 	FileName   string
-	BlockRange [2]uint
+	BeginBlock uint
+	EndBlock   uint
 }
 
 type ReadFileResponse struct {
@@ -32,22 +34,21 @@ type BlockInfo struct {
 	DataNodeEndpoints []string
 }
 
+// Request to read a block with the specified name and byte range [BeginOffset, EndOffset)
 type ReadBlockRequest struct {
-	BlockName  string
-	ByteOffset [2]uint
+	BlockName   string
+	BeginOffset uint
+	EndOffset   uint
 }
 
 type ReadBlockResponse struct {
 	Data []byte
 }
 
-// The latest version of the block, the size of the block,
-// and the DataNodes that store the latest block
-// Version = 0 represents invalid
 type BlockStorageInfo struct {
-	LatestVersion uint
-	Size          uint
-	DataNodes     []string
+	LatestVersion uint     // The latest version of the block, version = 0 represents invalid
+	Size          uint     // The size of the block
+	DataNodes     []string // DataNodes that store the latest block
 }
 
 // maps the BlockID to BlockStorageInfo

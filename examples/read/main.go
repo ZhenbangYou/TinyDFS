@@ -26,10 +26,10 @@ func main() {
 	fmt.Println("exists", exists)
 
 	// Read the specified portion of the file
-	data, success := dfs.Read(*path, *offset, *length)
-	if success {
+	data, err := dfs.Read(*path, *offset, *length)
+	if err == nil {
 		fmt.Println("read", string(data))
 	} else {
-		fmt.Println("read failed")
+		fmt.Println("read failed", err)
 	}
 }

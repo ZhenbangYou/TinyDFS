@@ -27,6 +27,8 @@ config/datanode_endpoints.txt
 # Executables
 namenode/namenode
 datanode/datanode
+examples/create/create
+examples/read/read
 
 # Log files
 *.log
