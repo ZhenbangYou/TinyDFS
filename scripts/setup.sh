@@ -22,9 +22,13 @@ mkdir -p "$DATANODE_DIR"
 # Create logs subfolder
 mkdir -p "$LOG_DIR"
 
+# Write Datanode test files
+python ./scripts/write_test_file.py --file_path test
+python ./scripts/write_test_file.py --file_path test_dir/test2
+
 # Start Namenode
 NAMENODE_ENDPOINT=$(cat "$NAMENODE_CONFIG")
-./namenode/namenode.exe "$NAMENODE_ENDPOINT" "./$LOG_DIR/namenode.log" &
+./namenode/namenode "$NAMENODE_ENDPOINT" "./$LOG_DIR/namenode.log" &
 
 # Sleep for 1 second to allow Namenode to start
 # sleep 1
@@ -36,11 +40,8 @@ while IFS= read -r DATANODE_ENDPOINT; do
   mkdir -p "$DATANODE_SUBDIR"
   pushd "$DATANODE_SUBDIR" > /dev/null
 
-  # Create test files with blockID 0 and version 0
-  echo "This is a test file for datanode with ID $ID" > "testfile{$ID}_0_0.txt"
-
   # Start Datanode
-  ../../datanode/datanode.exe "$NAMENODE_ENDPOINT" "$DATANODE_ENDPOINT" "../../$LOG_DIR/datanode_$ID.log" &
+  ../../datanode/datanode "$NAMENODE_ENDPOINT" "$DATANODE_ENDPOINT" "../../$LOG_DIR/datanode_$ID.log" &
 
   popd > /dev/null
   ID=$((ID + 1))

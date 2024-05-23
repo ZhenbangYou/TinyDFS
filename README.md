@@ -13,7 +13,12 @@ One line per DataNode, using the same format as above.
 ## Scripts
 ```bash scripts/build.sh```
 Build namenode and datanode.
+
 ```bash scripts/setup.sh```
 Run namenode and multiple datanodes.
+
 ```bash scripts/terminate.sh```
 Terminate all namenode and datanodes.
+
+## Examples
+```go run examples/read/main.go --server="localhost:8000" --path="test" --offset=10 --length=10```

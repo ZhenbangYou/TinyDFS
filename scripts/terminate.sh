@@ -4,6 +4,12 @@
 NAMENODE_PROCESS="namenode"
 DATANODE_PROCESS="datanode"
 
+# Define the test file directory for DataNodes
+DATANODE_DIR="datanode_data"
+
+# Define the logs directory
+LOG_DIR="logs"
+
 # Function to gracefully terminate processes
 terminate_processes() {
     local process_name=$1
@@ -28,3 +34,13 @@ terminate_processes "$NAMENODE_PROCESS"
 terminate_processes "$DATANODE_PROCESS"
 
 echo "All services stopped."
+
+# Delete the DataNode test file directory
+rm -rf "$DATANODE_DIR"
+echo "Deleted DataNode test file directory: $DATANODE_DIR"
+
+# Delete the logs directory
+rm -rf "$LOG_DIR"
+echo "Deleted logs directory: $LOG_DIR"
+
+echo "Termination complete."

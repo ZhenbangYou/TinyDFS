@@ -64,18 +64,8 @@ func main() {
 	}
 	slog.Info("Initialized datanode", "NameNode Endpoint", nameNodeEndpoint, "DataNode Endpoint", dataNodeEndpoint)
 
-	// Register with Namenode
-	if !dataNode.registerWithNameNode() {
-		panic("Failed to register with Namenode")
-	}
-
-	// Send initial block report
-	if !dataNode.sendBlockReport() {
-		slog.Error("Failed to send initial block report")
-		os.Exit(1)
-	}
-
-	// Start heartbeat loop
+	// Start heartbeat loop,
+	// this also register the datanode with the namenode and send block report
 	go dataNode.heartbeatLoop()
 
 	// Set up Datanode RPC server
@@ -85,7 +75,7 @@ func main() {
 	listener, err := net.Listen("tcp", ":"+dataNodePort) // Listen on all addresses
 	if err != nil {
 		slog.Error("listen error", "error", err)
-		os.Exit(1)
+		panic("Failed to start DataNode RPC server")
 	}
 	http.Serve(listener, nil)
 }
