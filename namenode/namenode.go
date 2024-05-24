@@ -22,7 +22,7 @@ type DataNodeInfo struct {
 
 type NameNode struct {
 	inodes      map[string]iNode
-	inodeRWLock *sync.RWMutex // The RWLock for the inodes
+	inodeRWLock *sync.RWMutex // The RWLock for all the inodes
 
 	datanodes      map[string]DataNodeInfo
 	datanodeRWLock *sync.RWMutex // The RWLock for the datanodes
@@ -106,9 +106,11 @@ func (server *NameNode) ReportBlock(blockReport common.BlockReport, success *boo
 	server.inodeRWLock.Lock()
 	defer server.inodeRWLock.Unlock()
 
-	// Delete all prior records of block storage info from the datanode
+	// Delete all prior records of the reporting datanode's block storage info
+	// so that we can update the latest info in the next step
 	for _, inode := range server.inodes {
 		inode.rwlock.Lock()
+		// In each file, remove the reporting datanode's endpoint from the storage list
 		for blockID, storageInfo := range inode.storageInfo {
 			var newStorageNodes []string
 			for _, storageNode := range storageInfo.DataNodes {
