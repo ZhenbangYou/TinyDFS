@@ -7,18 +7,18 @@ import (
 	"net/rpc"
 	"os"
 	"strings"
-	"sync"
 
 	"github.com/ZhenbangYou/TinyDFS/tiny-dfs/common"
 )
 
 // Command Line Args:
 // Args[1]: Namenode endpoint (IP:port)
-// Args[2]: Optional log file path
+// Args[2]: Datanode endpoint (IP:port)
+// Args[3]: Optional log file path
 func main() {
 	// Check command line arguments
-	if len(os.Args) < 2 || len(os.Args) > 3 {
-		slog.Error("expect 2 or 3 command line arguments", "actual argument count", len(os.Args))
+	if len(os.Args) < 3 || len(os.Args) > 4 {
+		slog.Error("expect 3 or 4 command line arguments", "actual argument count", len(os.Args))
 		os.Exit(1)
 	}
 
@@ -29,12 +29,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Read and validate Datanode endpoint
+	dataNodeEndpoint := os.Args[2]
+	if !common.IsValidEndpoint(dataNodeEndpoint) {
+		slog.Error("invalid datanode endpoint", "endpoint", dataNodeEndpoint)
+		os.Exit(1)
+	}
+
 	// Set up slog to log into a file or terminal
 	var logHandler slog.Handler
 	var programLevel = new(slog.LevelVar) // Info by default
 
-	if len(os.Args) == 3 {
-		logFilePath := os.Args[2]
+	if len(os.Args) == 4 {
+		logFilePath := os.Args[3]
 		// Set file permissions to allow Read and Write for the owner
 		logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 		if err != nil {
@@ -50,26 +57,25 @@ func main() {
 	slog.SetDefault(slog.New(logHandler))
 	programLevel.Set(slog.LevelDebug)
 
-	// Initialize NameNode
-	server := NameNode{
-		inodes:         make(map[string]iNode),
-		inodeRWLock:    new(sync.RWMutex),
-		datanodeRWLock: new(sync.RWMutex),
-		datanodes:      make(map[string]DataNodeInfo),
+	// Initialize DataNode
+	dataNode := DataNode{
+		nameNodeEndpoint: nameNodeEndpoint,
+		dataNodeEndpoint: dataNodeEndpoint,
 	}
-	slog.Info("Initialized namenode", "nameNodeEndpoint", nameNodeEndpoint)
+	slog.Info("Initialized datanode", "NameNode Endpoint", nameNodeEndpoint, "DataNode Endpoint", dataNodeEndpoint)
 
-	// Set up namenode RPC server
-	port := strings.Split(nameNodeEndpoint, ":")[1]
-	rpc.Register(&server)
+	// Start heartbeat loop,
+	// this also register the datanode with the namenode and send block report
+	go dataNode.heartbeatLoop()
+
+	// Set up Datanode RPC server
+	dataNodePort := strings.Split(dataNodeEndpoint, ":")[1]
+	rpc.Register(&dataNode)
 	rpc.HandleHTTP()
-	listener, err := net.Listen("tcp", ":"+port) // Listen on all addresses
+	listener, err := net.Listen("tcp", ":"+dataNodePort) // Listen on all addresses
 	if err != nil {
 		slog.Error("listen error", "error", err)
+		panic("Failed to start DataNode RPC server")
 	}
 	http.Serve(listener, nil)
-
-	// Start the heartbeat monitor
-	go server.heartbeatMonitor()
-
 }
