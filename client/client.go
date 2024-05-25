@@ -125,9 +125,35 @@ func (dfs *DistributedFileSystem) GetAttributes(path string) (common.FileAttribu
 	}
 }
 
-// Read Operation. Read the file specified by `path` from the offset `offset` with the length `length`
+type ReadHandle struct {
+	dfs    *DistributedFileSystem
+	path   string
+	offset uint
+}
+
+func (dfs *DistributedFileSystem) OpenForRead(path string) ReadHandle {
+	return ReadHandle{
+		dfs:    dfs,
+		path:   path,
+		offset: 0,
+	}
+}
+
+func (readHandle *ReadHandle) Seek(offset uint) {
+	readHandle.offset = offset
+}
+
+func (readHandle *ReadHandle) Read(length uint) ([]byte, error) {
+	data, err := readHandle.dfs.read(readHandle.path, readHandle.offset, length)
+	if err == nil {
+		readHandle.offset += uint(len(data))
+	}
+	return data, err
+}
+
+// read Operation. read the file specified by `path` from the offset `offset` with the length `length`
 // Returns the data read and the error (if any)
-func (dfs *DistributedFileSystem) Read(path string, offset uint, length uint) ([]byte, error) {
+func (dfs *DistributedFileSystem) read(path string, offset uint, length uint) ([]byte, error) {
 	if length == 0 {
 		return []byte{}, nil
 	}
