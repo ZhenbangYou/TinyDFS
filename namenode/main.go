@@ -18,7 +18,7 @@ import (
 type BlockStorageInfo struct {
 	LatestVersion uint     // The latest version of the block, version = 0 represents invalid
 	Size          uint     // The size of the block
-	DataNodes     []string // DataNodes that store the block of this specific version
+	DataNodes     []string // Endpoints of datanodes storing the block of the latest version
 }
 
 // Key: Block Index
