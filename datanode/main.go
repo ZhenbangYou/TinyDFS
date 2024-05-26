@@ -203,32 +203,17 @@ func (datanode *DataNode) ReadBlock(args *common.ReadBlockRequest, response *com
 	}
 	defer file.Close()
 
-	// Seek to the start offset
-	_, err = file.Seek(int64(args.BeginOffset), 0)
-	if err != nil {
-		slog.Error("error when seek to the start offset", "error", err)
-		return err
-	}
-
 	// Ensure response.Data is of sufficient size
-	numBytes := args.EndOffset - args.BeginOffset
-	if len(response.Data) < int(numBytes) {
-		response.Data = make([]byte, numBytes)
-	} else {
-		response.Data = response.Data[:numBytes]
-	}
+	response.Data = make([]byte, args.Length)
 
 	// Read the block data into response.Data
-	n, err := file.Read(response.Data)
+	n, err := file.ReadAt(response.Data, int64(args.BeginOffset))
 	if err != nil && err != io.EOF {
 		slog.Error("error reading block data", "error", err)
 		return err
 	}
-
-	// Check if the number of bytes read is correct
-	if uint(n) != numBytes {
-		slog.Error("incorrect number of bytes read", "expected", numBytes, "actual", n)
-		return io.ErrUnexpectedEOF
+	if err == io.EOF {
+		response.Data = response.Data[:n]
 	}
 
 	slog.Debug("ReadBlock succeeded", "file name", args.FileName,
@@ -239,6 +224,43 @@ func (datanode *DataNode) ReadBlock(args *common.ReadBlockRequest, response *com
 
 func (datanode *DataNode) WriteBlock(args *common.WriteBlockRequest, unused *bool) error {
 	slog.Info("WriteBlock request", "block info", args)
+
+	const TEMP_SUFFIX = ".temp"
+
+	completePath := constructBlockName(args.FileName, args.BlockIndex, args.Version)
+	tempPath := completePath + TEMP_SUFFIX
+	// Write to this temp file first. After successfully writing all data, rename the file.
+	file, err := os.Create(tempPath)
+	if err != nil {
+		slog.Error("error creating file", "error", err)
+		return err
+	}
+	defer file.Close()
+
+	// Seek to the start offset
+	_, err = file.Seek(int64(args.BeginOffset), 0)
+	if err != nil {
+		slog.Error("error when seek to the start offset", "error", err)
+		return err
+	}
+
+	// Write data
+	_, err = file.WriteAt(args.Data, int64(args.BeginOffset))
+	if err != nil {
+		slog.Error("Write block error", "error", err)
+		os.Remove(tempPath)
+		return err
+	} else {
+		os.Rename(tempPath, completePath)
+	}
+
+	if len(args.RemainingEndpointsInChain) > 0 {
+		// Call next node
+	}
+
+	if args.ReportToNameNode {
+
+	}
 
 	return nil
 }

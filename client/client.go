@@ -219,7 +219,7 @@ func (dfs *DistributedFileSystem) read(path string, offset uint, length uint) ([
 				BlockIndex:  blockIndex,
 				Version:     blockInfo.Version,
 				BeginOffset: beginOffset,
-				EndOffset:   endOffset,
+				Length:      endOffset - beginOffset,
 			}
 
 			var readBlockResponse common.ReadBlockResponse
@@ -341,7 +341,7 @@ func (writeHandle *WriteHandle) Write(data []byte) error {
 				FileName:    path,
 				BlockIndex:  beginBlock + uint(i),
 				BeginOffset: beginOffset,
-				EndOffset:   endOffset,
+				Length:      endOffset - beginOffset,
 			}
 
 			var readBlockResponse common.ReadBlockResponse

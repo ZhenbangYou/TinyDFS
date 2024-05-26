@@ -42,7 +42,7 @@ type ReadBlockRequest struct {
 	BlockIndex  uint
 	Version     uint
 	BeginOffset uint
-	EndOffset   uint
+	Length   uint
 }
 
 type ReadBlockResponse struct {
@@ -54,7 +54,8 @@ type WriteBlockRequest struct {
 	BlockIndex  uint
 	Version     uint
 	BeginOffset uint
-	EndOffset   uint
+
+	Data []byte
 
 	// All datanodes holding a block form a Chain Replication, hence the name
 	RemainingEndpointsInChain []string
