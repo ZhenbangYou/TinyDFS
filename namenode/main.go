@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -116,7 +117,7 @@ func (server *NameNode) ReportBlock(blockReport common.BlockReport, success *boo
 	for _, inode := range server.inodes {
 		inode.rwlock.Lock()
 		// In each file, remove the reporting datanode's endpoint from the storage list
-		for blockID, storageInfo := range inode.storageInfo {
+		for blockIndex, storageInfo := range inode.storageInfo {
 			var newStorageNodes []string
 			for _, storageNode := range storageInfo.DataNodes {
 				if storageNode != blockReport.Endpoint {
@@ -124,23 +125,15 @@ func (server *NameNode) ReportBlock(blockReport common.BlockReport, success *boo
 				}
 			}
 			storageInfo.DataNodes = newStorageNodes
-			inode.storageInfo[blockID] = storageInfo
+			inode.storageInfo[blockIndex] = storageInfo
 		}
 		inode.rwlock.Unlock()
 	}
 
-	for blockName, metadata := range blockReport.BlockMetadata {
-		// Parse the block name
-		fileName, blockID, version, err := common.ParseBlockName(blockName)
-		if err != nil {
-			slog.Error("ParseBlockName error", "blockName", blockName)
-			*success = false
-			return errors.New("ParseBlockName error")
-		}
-
+	for _, blockMetadata := range blockReport.BlockMetadata {
 		// If the file doesn't exist, create a new inode
 		// TODO: check the semantics here
-		inode, exists := server.inodes[fileName]
+		inode, exists := server.inodes[blockMetadata.FileName]
 		if !exists {
 			inode = iNode{
 				fileAttributes: common.FileAttributes{
@@ -149,37 +142,48 @@ func (server *NameNode) ReportBlock(blockReport common.BlockReport, success *boo
 				rwlock:      new(sync.RWMutex),
 				storageInfo: make(common.FileStorageInfo),
 			}
-			server.inodes[fileName] = inode
-			slog.Debug("Create new inode", "fileName", fileName,
+			server.inodes[blockMetadata.FileName] = inode
+			slog.Debug("Create new inode", "fileName", blockMetadata.FileName,
 				"fileAttributes", inode.fileAttributes, "storageInfo", inode.storageInfo)
 		}
 
 		inode.rwlock.Lock()
 
 		// Update the storage info
-		if storageInfo, ok := inode.storageInfo[blockID]; ok {
-			if version > inode.storageInfo[blockID].LatestVersion {
-				inode.storageInfo[blockID] = common.BlockStorageInfo{
-					LatestVersion: version,
-					Size:          metadata.Size,
+		if storageInfo, ok := inode.storageInfo[blockMetadata.BlockIndex]; ok {
+			// Block info exists in namenode
+
+			if blockMetadata.Version > inode.storageInfo[blockMetadata.BlockIndex].LatestVersion {
+				// Find a newer version
+				inode.storageInfo[blockMetadata.BlockIndex] = common.BlockStorageInfo{
+					LatestVersion: blockMetadata.Version,
+					Size:          blockMetadata.Size,
 					DataNodes:     []string{blockReport.Endpoint},
 				}
-				slog.Debug("Update storage info", "fileName", fileName, "blockID", blockID,
-					slog.Any("storageInfo", inode.storageInfo[blockID]))
-			} else if version == inode.storageInfo[blockID].LatestVersion {
+				slog.Debug("Update storage info",
+					"file name", blockMetadata.FileName,
+					"block index", blockMetadata.BlockIndex,
+					slog.Any("storageInfo", inode.storageInfo[blockMetadata.BlockIndex]))
+			} else if blockMetadata.Version == inode.storageInfo[blockMetadata.BlockIndex].LatestVersion {
+				// Same version, find a new replica
 				storageInfo.DataNodes = append(
-					inode.storageInfo[blockID].DataNodes, blockReport.Endpoint)
-				inode.storageInfo[blockID] = storageInfo
-				slog.Debug("Append storage info", "fileName", fileName, "blockID", blockID,
-					slog.Any("storageInfo", inode.storageInfo[blockID]))
+					inode.storageInfo[blockMetadata.BlockIndex].DataNodes, blockReport.Endpoint)
+				inode.storageInfo[blockMetadata.BlockIndex] = storageInfo
+				slog.Debug("Append storage info",
+					"file name", blockMetadata.FileName,
+					"block index", blockMetadata.BlockIndex,
+					slog.Any("storageInfo", inode.storageInfo[blockMetadata.BlockIndex]))
 			} else {
 				// TODO: mark as stale block and return the info to the datanode
 			}
 		} else {
-			slog.Debug("Create new storage info", "fileName", fileName, "blockID", blockID)
-			inode.storageInfo[blockID] = common.BlockStorageInfo{
-				LatestVersion: version,
-				Size:          metadata.Size,
+			// Block info doesn't exist in namenode
+			slog.Debug("Create new storage info",
+				"file name", blockMetadata.FileName,
+				"block index", blockMetadata.BlockIndex)
+			inode.storageInfo[blockMetadata.BlockIndex] = common.BlockStorageInfo{
+				LatestVersion: blockMetadata.Version,
+				Size:          blockMetadata.Size,
 				DataNodes:     []string{blockReport.Endpoint},
 			}
 		}
@@ -253,18 +257,17 @@ func (server *NameNode) heartbeatMonitor() {
 	}
 }
 
-// ReadRequest handles the read request from the client,
+// GetBlockLocations handles the read request from the client,
 // and returns (Block Name, DataNode Endpoint) pair for each block
 // TODO: only return DataNode Endpoint ?
-func (server *NameNode) ReadRequest(args *common.ReadFileRequest, reply *common.ReadFileResponse) error {
-	slog.Info("ReadRequest", "file", args.FileName)
+func (server *NameNode) GetBlockLocations(args *common.GetBlockLocationsRequest, reply *common.GetBlockLocationsResponse) error {
+	slog.Info("GetBlockLocations", "file", args.FileName)
 
 	server.inodeRWLock.RLock()
 	inode, exists := server.inodes[args.FileName]
 	server.inodeRWLock.RUnlock()
 
 	if !exists {
-		reply.Succeeded = false
 		slog.Error("file not found", "file", args.FileName)
 		return errors.New("file not found")
 	}
@@ -278,7 +281,6 @@ func (server *NameNode) ReadRequest(args *common.ReadFileRequest, reply *common.
 	for i := args.BeginBlock; i < args.EndBlock; i++ {
 		storageInfo, exist := inode.storageInfo[i]
 		if !exist {
-			reply.Succeeded = false
 			slog.Error("block index does not exist", "block index", i)
 			return errors.New("block index does not exist")
 		}
@@ -305,24 +307,21 @@ func (server *NameNode) ReadRequest(args *common.ReadFileRequest, reply *common.
 		}
 		// // Randomly select an alive storage node
 		// if len(aliveStorageNodes) == 0 {
-		// 	reply.Succeeded = false
 		// 	slog.Error("no alive DataNode")
 		// 	return errors.New("no alive DataNode")
 		// }
 		// dataNode := aliveStorageNodes[rand.Intn(len(aliveStorageNodes))]
 
-		blockname := common.ConstructBlockName(args.FileName, i, inode.storageInfo[i].LatestVersion)
 		// TODO: should we not disclose version number to client?
 		blockInfoList = append(blockInfoList, common.BlockInfo{
-			BlockName:         blockname,
+			Version:           inode.storageInfo[i].LatestVersion,
 			DataNodeEndpoints: aliveStorageNodes,
 		})
 	}
 
-	reply.Succeeded = true
 	reply.BlockInfoList = blockInfoList
 
-	slog.Debug("ReadRequest success", "file", args.FileName, "blockInfoList", blockInfoList)
+	slog.Debug("GetBlockLocations success", "file", args.FileName, "blockInfoList", blockInfoList)
 
 	return nil
 }
@@ -345,15 +344,13 @@ func (server *NameNode) getDataNodeLiveness() map[string]bool {
 func main() {
 	// Check command line arguments
 	if len(os.Args) < 2 || len(os.Args) > 3 {
-		slog.Error("expect 2 or 3 command line arguments", "actual argument count", len(os.Args))
-		os.Exit(1)
+		panic(fmt.Sprintln("expect 2 or 3 command line arguments, actual argument count", len(os.Args)))
 	}
 
 	// Read and validate Namenode endpoint
 	nameNodeEndpoint := os.Args[1]
 	if !common.IsValidEndpoint(nameNodeEndpoint) {
-		slog.Error("invalid namenode endpoint", "endpoint", nameNodeEndpoint)
-		os.Exit(1)
+		panic(fmt.Sprintln("invalid namenode endpoint", nameNodeEndpoint))
 	}
 
 	// Set up slog to log into a file or terminal
@@ -365,8 +362,7 @@ func main() {
 		// Set file permissions to allow Read and Write for the owner
 		logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 		if err != nil {
-			slog.Error("failed to open log file", "error", err)
-			os.Exit(1)
+			panic(fmt.Sprintln("failed to open log file", err))
 		}
 		defer logFile.Close()
 		logHandler = slog.NewJSONHandler(logFile, &slog.HandlerOptions{Level: programLevel})

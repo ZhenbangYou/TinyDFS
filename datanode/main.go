@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -8,6 +9,7 @@ import (
 	"net/rpc"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,7 +28,7 @@ type DataNode struct {
 // Go over all the files in the subdir,
 // Create locks and generate a block report for the namenode
 func (datanode *DataNode) generateBlockReport() common.BlockReport {
-	blockMetadata := make(map[string]common.BlockMetadata)
+	var blockMetadata []common.BlockMetadata
 	datanode.blockRWLock = make(map[string]*sync.RWMutex)
 
 	err := filepath.Walk(".", func(path string, info os.FileInfo, err error) error {
@@ -37,9 +39,18 @@ func (datanode *DataNode) generateBlockReport() common.BlockReport {
 			return nil
 		}
 		datanode.blockRWLock[path] = new(sync.RWMutex)
-		blockMetadata[path] = common.BlockMetadata{
-			Size: uint(info.Size()),
+
+		fileName, blockIndex, version, err := parseBlockName(path)
+		if err != nil {
+			return err
 		}
+
+		blockMetadata = append(blockMetadata, common.BlockMetadata{
+			FileName:   fileName,
+			BlockIndex: blockIndex,
+			Version:    version,
+			Size:       uint(info.Size()),
+		})
 		return nil
 	})
 
@@ -153,15 +164,39 @@ func (datanode *DataNode) heartbeatLoop() {
 	}
 }
 
+// BlockName format: fileName_blockID_versionID
+func constructBlockName(fileName string, blockID uint, versionID uint) string {
+	return fmt.Sprintf("%s_%d_%d", fileName, blockID, versionID)
+}
+
+// Parse blockName and returns fileName, blockID, versionID, and potential error
+func parseBlockName(blockName string) (string, uint, uint, error) {
+	parts := strings.Split(blockName, "_")
+	// the last part is the versionID
+	versionID, err := strconv.Atoi(parts[len(parts)-1])
+	if err != nil {
+		return "", 0, 0, err
+	}
+	// the second last part is the blockID
+	blockID, err := strconv.Atoi(parts[len(parts)-2])
+	if err != nil {
+		return "", 0, 0, err
+	}
+	// the other parts is the fileName
+	fileName := strings.Join(parts[:len(parts)-2], "_")
+	return fileName, uint(blockID), uint(versionID), nil
+}
+
 func (datanode *DataNode) ReadBlock(args *common.ReadBlockRequest, response *common.ReadBlockResponse) error {
-	slog.Info("ReadBlock request", "blockName", args.BlockName)
+	slog.Info("ReadBlock request", "file name", args.FileName, "block index", args.BlockIndex)
 
 	// TODO: check if lock is needed here
 	// datanode.blockRWLock[args.BlockName].RLock()
 	// defer datanode.blockRWLock[args.BlockName].RUnlock()
 
 	// Open the block file
-	file, err := os.Open(args.BlockName)
+	completePath := constructBlockName(args.FileName, args.BlockIndex, args.Version)
+	file, err := os.Open(completePath)
 	if err != nil {
 		slog.Error("error opening block file", "error", err)
 		return err
@@ -196,7 +231,14 @@ func (datanode *DataNode) ReadBlock(args *common.ReadBlockRequest, response *com
 		return io.ErrUnexpectedEOF
 	}
 
-	slog.Debug("ReadBlock succeeded", "blockName", args.BlockName, "numBytes", n)
+	slog.Debug("ReadBlock succeeded", "file name", args.FileName,
+		"block index", args.BlockIndex, "bytes read", n)
+
+	return nil
+}
+
+func (datanode *DataNode) WriteBlock(args *common.WriteBlockRequest, unused *bool) error {
+	slog.Info("WriteBlock request", "blockName", args.BlockName)
 
 	return nil
 }
@@ -208,22 +250,19 @@ func (datanode *DataNode) ReadBlock(args *common.ReadBlockRequest, response *com
 func main() {
 	// Check command line arguments
 	if len(os.Args) < 3 || len(os.Args) > 4 {
-		slog.Error("expect 3 or 4 command line arguments", "actual argument count", len(os.Args))
-		os.Exit(1)
+		panic(fmt.Sprintln("expect 3 or 4 command line arguments, actual argument count", len(os.Args)))
 	}
 
 	// Read and validate Namenode endpoint
 	nameNodeEndpoint := os.Args[1]
 	if !common.IsValidEndpoint(nameNodeEndpoint) {
-		slog.Error("invalid namenode endpoint", "endpoint", nameNodeEndpoint)
-		os.Exit(1)
+		panic(fmt.Sprintln("invalid namenode endpoint, endpoint", nameNodeEndpoint))
 	}
 
 	// Read and validate Datanode endpoint
 	dataNodeEndpoint := os.Args[2]
 	if !common.IsValidEndpoint(dataNodeEndpoint) {
-		slog.Error("invalid datanode endpoint", "endpoint", dataNodeEndpoint)
-		os.Exit(1)
+		panic(fmt.Sprintln("invalid datanode endpoint, endpoint", dataNodeEndpoint))
 	}
 
 	// Set up slog to log into a file or terminal
@@ -235,8 +274,7 @@ func main() {
 		// Set file permissions to allow Read and Write for the owner
 		logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 		if err != nil {
-			slog.Error("failed to open log file", "error", err)
-			os.Exit(1)
+			panic(fmt.Sprintln("failed to open log file", err))
 		}
 		defer logFile.Close()
 		logHandler = slog.NewJSONHandler(logFile, &slog.HandlerOptions{Level: programLevel})
@@ -264,8 +302,7 @@ func main() {
 	rpc.HandleHTTP()
 	listener, err := net.Listen("tcp", ":"+dataNodePort) // Listen on all addresses
 	if err != nil {
-		slog.Error("listen error", "error", err)
-		panic("Failed to start DataNode RPC server")
+		panic(fmt.Sprintln("Failed to start DataNode RPC server, listen error", err))
 	}
 	http.Serve(listener, nil)
 }

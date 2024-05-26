@@ -165,37 +165,33 @@ func (dfs *DistributedFileSystem) read(path string, offset uint, length uint) ([
 	endBlockOffset := (offset+length-1)%common.BLOCK_SIZE + 1
 
 	// Step 2: Get the block metadata from the NameNode
-	readRequest := common.ReadFileRequest{
+	getBlockLocationsRequest := common.GetBlockLocationsRequest{
 		FileName:   path,
 		BeginBlock: uint(beginBlock),
 		EndBlock:   uint(endBlock),
 	}
 
-	var readResponse common.ReadFileResponse
+	var getBlockLocationsResponse common.GetBlockLocationsResponse
 	client, err := rpc.DialHTTP("tcp", dfs.endpoint)
 	if err != nil {
 		slog.Error("dialing error", "error", err)
 		return nil, err
 	}
 
-	err = client.Call("NameNode.ReadRequest", readRequest, &readResponse)
+	err = client.Call("NameNode.GetBlockLocations", getBlockLocationsRequest, &getBlockLocationsResponse)
 	if err != nil {
-		slog.Error("Error during Read Request", "error", err)
+		slog.Error("Error during GetBlockLocations Request", "error", err)
 		return nil, err
 	}
-	if !readResponse.Succeeded {
-		slog.Error("ReadRequest failed", "file", path)
-		return nil, errors.New("ReadRequest failed")
-	}
 
-	slog.Info("ReadRequest succeeded", "file", path, "BlockInfoList", readResponse.BlockInfoList)
+	slog.Info("GetBlockLocations succeeded", "file", path, "BlockInfoList", getBlockLocationsResponse.BlockInfoList)
 
 	// Step 3: Read the blocks from the DataNodes in parallel
 	var wg sync.WaitGroup
 	dataBuffer := make([]byte, length)
 	allSucceeded := true
 
-	for i, blockInfo := range readResponse.BlockInfoList {
+	for i, blockInfo := range getBlockLocationsResponse.BlockInfoList {
 		wg.Add(1)
 
 		beginOffset := uint(0)
@@ -203,7 +199,130 @@ func (dfs *DistributedFileSystem) read(path string, offset uint, length uint) ([
 		if i == 0 {
 			beginOffset = uint(beginBlockOffset)
 		}
-		if i == len(readResponse.BlockInfoList)-1 {
+		if i == len(getBlockLocationsResponse.BlockInfoList)-1 {
+			endOffset = uint(endBlockOffset)
+		}
+
+		go func(blockInfo common.BlockInfo, blockIndex uint, beginOffset uint, endOffset uint) {
+			defer wg.Done()
+			// Randomly choose one DataNode to read the block
+			dataNodeEndpoint := blockInfo.DataNodeEndpoints[rand.Intn(len(blockInfo.DataNodeEndpoints))]
+			dataNodeClient, err := rpc.DialHTTP("tcp", dataNodeEndpoint)
+			if err != nil {
+				slog.Error("dialing error", "error", err, "DataNode Endpoint", dataNodeEndpoint)
+				allSucceeded = false
+				return
+			}
+
+			readBlockRequest := common.ReadBlockRequest{
+				FileName:    path,
+				BlockIndex:  blockIndex,
+				Version:     blockInfo.Version,
+				BeginOffset: beginOffset,
+				EndOffset:   endOffset,
+			}
+
+			var readBlockResponse common.ReadBlockResponse
+
+			asyncRpcCall := dataNodeClient.Go("DataNode.ReadBlock", readBlockRequest, &readBlockResponse, nil)
+
+			select {
+			case <-asyncRpcCall.Done:
+				if asyncRpcCall.Error != nil {
+					slog.Error("ReadBlock RPC error", "error", asyncRpcCall.Error)
+					allSucceeded = false
+				} else {
+					bufferStart := (beginBlock*common.BLOCK_SIZE + beginOffset) - offset
+					slog.Debug("ReadBlock succeeded", "Block Index", readBlockRequest.BlockIndex, "Data", readBlockResponse.Data, "BufferStart", bufferStart)
+					copy(dataBuffer[bufferStart:], readBlockResponse.Data)
+				}
+			case <-time.After(common.READ_BLOCK_TIMEOUT):
+				slog.Error("ReadBlock RPC timeout", "DataNode Endpoint", dataNodeEndpoint)
+				allSucceeded = false
+			}
+
+		}(blockInfo, uint(i), beginOffset, endOffset)
+	}
+
+	wg.Wait()
+
+	if !allSucceeded {
+		slog.Error("Failed to read all blocks")
+		return nil, errors.New("failed to read all blocks")
+	}
+
+	return dataBuffer, nil
+}
+
+type WriteHandle struct {
+	dfs    *DistributedFileSystem
+	path   string
+	offset uint
+}
+
+func (dfs *DistributedFileSystem) OpenForWrite(path string) WriteHandle {
+	return WriteHandle{
+		dfs:    dfs,
+		path:   path,
+		offset: 0,
+	}
+}
+
+func (writeHandle *WriteHandle) Seek(offset uint) {
+	writeHandle.offset = offset
+}
+
+func (writeHandle *WriteHandle) Write(data []byte) error {
+	offset := writeHandle.offset
+	length := uint(len(data))
+	path := writeHandle.path
+	dfs := writeHandle.dfs
+
+	if length == 0 {
+		return nil
+	}
+
+	// Step 1: Calculate the blocks that need to be read and their offsets
+	beginBlock := offset / common.BLOCK_SIZE
+	endBlock := (offset+length-1)/common.BLOCK_SIZE + 1
+	beginBlockOffset := offset % common.BLOCK_SIZE
+	endBlockOffset := (offset+length-1)%common.BLOCK_SIZE + 1
+
+	// Step 2: Get the block metadata from the NameNode
+	getBlockLocationsRequest := common.GetBlockLocationsRequest{
+		FileName:   path,
+		BeginBlock: uint(beginBlock),
+		EndBlock:   uint(endBlock),
+	}
+
+	var getBlockLocationsResponse common.GetBlockLocationsResponse
+	client, err := rpc.DialHTTP("tcp", dfs.endpoint)
+	if err != nil {
+		slog.Error("dialing error", "error", err)
+		return err
+	}
+
+	err = client.Call("NameNode.GetBlockLocations", getBlockLocationsRequest, &getBlockLocationsResponse)
+	if err != nil {
+		slog.Error("Error during GetBlockLocations Request", "error", err)
+		return err
+	}
+
+	slog.Info("GetBlockLocations succeeded", "file", path, "BlockInfoList", getBlockLocationsResponse.BlockInfoList)
+
+	// Step 3: Read the blocks from the DataNodes in parallel
+	var wg sync.WaitGroup
+	allSucceeded := true
+
+	for i, blockInfo := range getBlockLocationsResponse.BlockInfoList {
+		wg.Add(1)
+
+		beginOffset := uint(0)
+		endOffset := uint(common.BLOCK_SIZE)
+		if i == 0 {
+			beginOffset = uint(beginBlockOffset)
+		}
+		if i == len(getBlockLocationsResponse.BlockInfoList)-1 {
 			endOffset = uint(endBlockOffset)
 		}
 
@@ -219,7 +338,8 @@ func (dfs *DistributedFileSystem) read(path string, offset uint, length uint) ([
 			}
 
 			readBlockRequest := common.ReadBlockRequest{
-				BlockName:   blockInfo.BlockName,
+				FileName:    path,
+				BlockIndex:  beginBlock + uint(i),
 				BeginOffset: beginOffset,
 				EndOffset:   endOffset,
 			}
@@ -234,15 +354,8 @@ func (dfs *DistributedFileSystem) read(path string, offset uint, length uint) ([
 					slog.Error("ReadBlock RPC error", "error", asyncRpcCall.Error)
 					allSucceeded = false
 				} else {
-					_, blockID, _, err := common.ParseBlockName(blockInfo.BlockName)
-					if err != nil {
-						slog.Error("Error parsing block name", "error", err)
-						allSucceeded = false
-						return
-					}
-					bufferStart := (blockID*common.BLOCK_SIZE + beginOffset) - offset
-					slog.Debug("ReadBlock succeeded", "BlockName", blockInfo.BlockName, "Data", readBlockResponse.Data, "BufferStart", bufferStart)
-					copy(dataBuffer[bufferStart:], readBlockResponse.Data)
+					bufferStart := (beginBlock*common.BLOCK_SIZE + beginOffset) - offset
+					slog.Debug("ReadBlock succeeded", "Block Index", readBlockRequest.BlockIndex, "Data", readBlockResponse.Data, "BufferStart", bufferStart)
 				}
 			case <-time.After(common.READ_BLOCK_TIMEOUT):
 				slog.Error("ReadBlock RPC timeout", "DataNode Endpoint", dataNodeEndpoint)
@@ -255,9 +368,11 @@ func (dfs *DistributedFileSystem) read(path string, offset uint, length uint) ([
 	wg.Wait()
 
 	if !allSucceeded {
-		slog.Error("Failed to read all blocks")
-		return nil, errors.New("failed to read all blocks")
+		slog.Error("Failed to write all blocks")
+		return errors.New("failed to write all blocks")
 	}
 
-	return dataBuffer, nil
+	return nil
 }
+
+func (writeHandle *WriteHandle) Close() {}
