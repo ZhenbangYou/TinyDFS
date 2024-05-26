@@ -238,7 +238,7 @@ func (datanode *DataNode) ReadBlock(args *common.ReadBlockRequest, response *com
 }
 
 func (datanode *DataNode) WriteBlock(args *common.WriteBlockRequest, unused *bool) error {
-	slog.Info("WriteBlock request", "blockName", args.BlockName)
+	slog.Info("WriteBlock request", "block info", args)
 
 	return nil
 }
