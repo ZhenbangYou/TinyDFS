@@ -50,7 +50,9 @@ type ReadBlockResponse struct {
 }
 
 type WriteBlockRequest struct {
-	BlockName   string
+	FileName    string
+	BlockIndex  uint
+	Version     uint
 	BeginOffset uint
 	EndOffset   uint
 
@@ -60,12 +62,3 @@ type WriteBlockRequest struct {
 	// If true, the datanode receiving this request should report to the namenode on success
 	ReportToNameNode bool
 }
-
-type BlockStorageInfo struct {
-	LatestVersion uint     // The latest version of the block, version = 0 represents invalid
-	Size          uint     // The size of the block
-	DataNodes     []string // DataNodes that store the latest block
-}
-
-// maps the BlockID to BlockStorageInfo
-type FileStorageInfo map[uint]BlockStorageInfo

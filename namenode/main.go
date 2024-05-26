@@ -15,10 +15,19 @@ import (
 	"github.com/ZhenbangYou/TinyDFS/tiny-dfs/common"
 )
 
+type BlockStorageInfo struct {
+	LatestVersion uint     // The latest version of the block, version = 0 represents invalid
+	Size          uint     // The size of the block
+	DataNodes     []string // DataNodes that store the block of this specific version
+}
+
+// Key: Block Index
+type FileStorageInfo map[uint]BlockStorageInfo
+
 type iNode struct {
 	fileAttributes common.FileAttributes
 	rwlock         *sync.RWMutex // Per-file rwlock
-	storageInfo    common.FileStorageInfo
+	storageInfo    FileStorageInfo
 }
 
 type DataNodeInfo struct {
@@ -52,7 +61,7 @@ func (server *NameNode) Create(path string, success *bool) error {
 		server.inodes[path] = iNode{
 			fileAttributes: metadata,
 			rwlock:         new(sync.RWMutex),
-			storageInfo:    make(common.FileStorageInfo),
+			storageInfo:    make(FileStorageInfo),
 		}
 		*success = true
 		return nil
@@ -140,7 +149,7 @@ func (server *NameNode) ReportBlock(blockReport common.BlockReport, success *boo
 					Size: 0,
 				},
 				rwlock:      new(sync.RWMutex),
-				storageInfo: make(common.FileStorageInfo),
+				storageInfo: make(FileStorageInfo),
 			}
 			server.inodes[blockMetadata.FileName] = inode
 			slog.Debug("Create new inode", "fileName", blockMetadata.FileName,
@@ -155,7 +164,7 @@ func (server *NameNode) ReportBlock(blockReport common.BlockReport, success *boo
 
 			if blockMetadata.Version > inode.storageInfo[blockMetadata.BlockIndex].LatestVersion {
 				// Find a newer version
-				inode.storageInfo[blockMetadata.BlockIndex] = common.BlockStorageInfo{
+				inode.storageInfo[blockMetadata.BlockIndex] = BlockStorageInfo{
 					LatestVersion: blockMetadata.Version,
 					Size:          blockMetadata.Size,
 					DataNodes:     []string{blockReport.Endpoint},
@@ -181,7 +190,7 @@ func (server *NameNode) ReportBlock(blockReport common.BlockReport, success *boo
 			slog.Debug("Create new storage info",
 				"file name", blockMetadata.FileName,
 				"block index", blockMetadata.BlockIndex)
-			inode.storageInfo[blockMetadata.BlockIndex] = common.BlockStorageInfo{
+			inode.storageInfo[blockMetadata.BlockIndex] = BlockStorageInfo{
 				LatestVersion: blockMetadata.Version,
 				Size:          blockMetadata.Size,
 				DataNodes:     []string{blockReport.Endpoint},
