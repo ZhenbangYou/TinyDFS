@@ -232,7 +232,7 @@ func (dfs *DistributedFileSystem) read(path string, offset uint, length uint) ([
 					slog.Error("ReadBlock RPC error", "error", asyncRpcCall.Error)
 					allSucceeded = false
 				} else {
-					bufferStart := (beginBlock*common.BLOCK_SIZE + beginOffset) - offset
+					bufferStart := (blockIndex*common.BLOCK_SIZE + beginOffset) - offset
 					slog.Debug("ReadBlock succeeded", "Block Index", readBlockRequest.BlockIndex, "Data", readBlockResponse.Data, "BufferStart", bufferStart)
 					copy(dataBuffer[bufferStart:], readBlockResponse.Data)
 				}
@@ -241,7 +241,7 @@ func (dfs *DistributedFileSystem) read(path string, offset uint, length uint) ([
 				allSucceeded = false
 			}
 
-		}(blockInfo, uint(i), beginOffset, endOffset)
+		}(blockInfo, beginBlock+uint(i), beginOffset, endOffset)
 	}
 
 	wg.Wait()
