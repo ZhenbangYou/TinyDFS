@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -222,47 +223,165 @@ func (datanode *DataNode) ReadBlock(args *common.ReadBlockRequest, response *com
 	return nil
 }
 
+// If this RPC returns nil (i.e., no error, meaning success), the block must have been persistently
+// written to the distributed file system. However, even if this RPC returns an error, the write
+// may still be successful, e.g., the error may be due to the lost of the reply from datanode to client
 func (datanode *DataNode) WriteBlock(args *common.WriteBlockRequest, unused *bool) error {
 	slog.Info("WriteBlock request", "block info", args)
 
-	const TEMP_SUFFIX = ".temp"
+	curPath := constructBlockName(args.FileName, args.BlockIndex, args.Version)
+	prevPath := constructBlockName(args.FileName, args.BlockIndex, args.Version-1)
 
-	completePath := constructBlockName(args.FileName, args.BlockIndex, args.Version)
-	tempPath := completePath + TEMP_SUFFIX
-	// Write to this temp file first. After successfully writing all data, rename the file.
-	file, err := os.Create(tempPath)
+	curFile, err := os.Create(curPath)
 	if err != nil {
 		slog.Error("error creating file", "error", err)
 		return err
 	}
-	defer file.Close()
-
-	// Seek to the start offset
-	_, err = file.Seek(int64(args.BeginOffset), 0)
-	if err != nil {
-		slog.Error("error when seek to the start offset", "error", err)
-		return err
-	}
 
 	// Write data
-	_, err = file.WriteAt(args.Data, int64(args.BeginOffset))
+	_, err = curFile.WriteAt(args.Data, int64(args.BeginOffset))
 	if err != nil {
 		slog.Error("Write block error", "error", err)
-		os.Remove(tempPath)
+		os.Remove(curPath)
 		return err
+	}
+
+	blockSize := args.BeginOffset + uint(len(args.Data))
+
+	// TODO: Significant write amplification in random writes, can be improved a lot
+	// Copy file from the previous version
+	if args.Version > common.MIN_VALID_VERSION_NUMBER {
+		// If a previous version exists
+
+		prevFile, err := os.Open(prevPath)
+		if err != nil {
+			prevFile.Close()
+			curFile.Close()
+			os.Remove(curPath)
+			return err
+		}
+
+		if args.BeginOffset > 0 {
+			buffer := make([]byte, args.BeginOffset)
+			_, err := prevFile.Read(buffer)
+			if err != nil {
+				prevFile.Close()
+				curFile.Close()
+				os.Remove(curPath)
+				return err
+			}
+			_, err = curFile.WriteAt(buffer, 0)
+			if err != nil {
+				prevFile.Close()
+				curFile.Close()
+				os.Remove(curPath)
+				return err
+			}
+		}
+
+		prevStat, err := prevFile.Stat()
+		if err != nil {
+			prevFile.Close()
+			curFile.Close()
+			os.Remove(curPath)
+			return err
+		}
+		prevSize := prevStat.Size()
+		CurEndOffset := args.BeginOffset + uint(len(args.Data))
+		if CurEndOffset < uint(prevSize) {
+			blockSize = uint(prevSize)
+
+			lengthDiff := uint(prevSize) - CurEndOffset
+			buffer := make([]byte, lengthDiff)
+			_, err := prevFile.ReadAt(buffer, int64(CurEndOffset))
+			if err != nil {
+				prevFile.Close()
+				curFile.Close()
+				os.Remove(curPath)
+				return err
+			}
+			_, err = curFile.WriteAt(buffer, int64(CurEndOffset))
+			if err != nil {
+				prevFile.Close()
+				curFile.Close()
+				os.Remove(curPath)
+				return err
+			}
+		}
+		prevFile.Close()
+	}
+	curFile.Close()
+
+	if args.IndexInChain+1 == uint(len(args.ReplicaEndpoints)) {
+		// Last one in chain, report to namenode
+
+		client, err := rpc.DialHTTP("tcp", datanode.nameNodeEndpoint)
+		if err != nil {
+			slog.Error("dialing namanode error", "error", err)
+			return err
+		}
+
+		bumpBlockVersionRequest := common.BlockVersionBump{
+			FileName:         args.FileName,
+			BlockIndex:       args.BlockIndex,
+			Version:          args.Version,
+			Size:             blockSize,
+			ReplicaEndpoints: args.ReplicaEndpoints,
+		}
+
+		var unused bool
+		// Should be blocking to avoid the case where the namenode successfully update block info
+		// but the reply gets lost
+		err = client.Call("NameNode.BumpBlockVersion", bumpBlockVersionRequest, &unused)
+
+		if err != nil {
+			// The latest block shouldn't be removed, since the reply from the namenode may be lost,
+			// i.e., even if this RPC fails, the update in the namenode may still be successful
+			slog.Error("BumpBlockVersion RPC error", "error", err)
+			return errors.New(
+				fmt.Sprintln(
+					"BumpBlockVersion RPC error", "error", err))
+		} else {
+			slog.Info("bump block version succeeded")
+			os.Remove(prevPath)
+			return nil
+		}
 	} else {
-		os.Rename(tempPath, completePath)
+		// Call the next node in chain
+
+		client, err := rpc.DialHTTP("tcp", args.ReplicaEndpoints[args.IndexInChain+1])
+		if err != nil {
+			slog.Error("dialing next datanode error",
+				"error", err,
+				"next datanode endpoint", args.ReplicaEndpoints[args.IndexInChain+1])
+			return err
+		}
+
+		writeBlockRequest := args
+		writeBlockRequest.IndexInChain += 1
+		var unused bool
+		// Should be blocking to avoid the case where the namenode and some datanodes
+		// successfully update block info but the reply gets lost
+		err = client.Call("DataNode.WriteBlock", &writeBlockRequest, &unused)
+
+		if err != nil {
+			// The latest block shouldn't be removed, because it's possible that the updates
+			// in the namenode and some datanodes are successful but the reply doesn't come
+			// back successfully
+			slog.Error("Write block to next datanode error",
+				"error", err,
+				"next datanode endpoint", args.ReplicaEndpoints[args.IndexInChain+1])
+			return errors.New(
+				fmt.Sprintln(
+					"Write block to next datanode error",
+					"error", err,
+					"next datanode endpoint", args.ReplicaEndpoints[args.IndexInChain+1]))
+		} else {
+			slog.Info("Write block to next datanode succeeded")
+			os.Remove(prevPath)
+			return nil
+		}
 	}
-
-	if len(args.RemainingEndpointsInChain) > 0 {
-		// Call next node
-	}
-
-	if args.ReportToNameNode {
-
-	}
-
-	return nil
 }
 
 // Command Line Args:

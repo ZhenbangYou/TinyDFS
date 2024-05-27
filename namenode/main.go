@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/rpc"
@@ -266,8 +267,32 @@ func (server *NameNode) heartbeatMonitor() {
 	}
 }
 
+// Pick `num` datanodes to hold a new block
+// TODO: optimize selection for load balancing
+func (server *NameNode) pickDatanodes(num uint) []string {
+	var datanodeList []string
+	for key := range server.datanodes {
+		datanodeList = append(datanodeList, key)
+	}
+
+	indices := make(map[int]bool) // Used as a hashset
+	result := make([]string, 0, num)
+	for len(result) < int(num) {
+		r := rand.Intn(len(server.datanodes))
+		_, exists := indices[r]
+		if !exists {
+			indices[r] = false
+			result = append(result, datanodeList[r])
+		}
+	}
+
+	return result
+}
+
 // GetBlockLocations handles the read request from the client,
 // and returns (Block Name, DataNode Endpoint) pair for each block
+// If the block doesn't exist but the file exist, the version of the block will be 
+// `common.MIN_VALID_VERSION_NUMBER - 1`
 // TODO: only return DataNode Endpoint ?
 func (server *NameNode) GetBlockLocations(args *common.GetBlockLocationsRequest, reply *common.GetBlockLocationsResponse) error {
 	slog.Info("GetBlockLocations", "file", args.FileName)
@@ -290,42 +315,44 @@ func (server *NameNode) GetBlockLocations(args *common.GetBlockLocationsRequest,
 	for i := args.BeginBlock; i < args.EndBlock; i++ {
 		storageInfo, exist := inode.storageInfo[i]
 		if !exist {
-			slog.Error("block index does not exist", "block index", i)
-			return errors.New("block index does not exist")
-		}
-
-		storageNodes := storageInfo.DataNodes
-		// Filter out the alive storage nodes
-		var hasDeadNode bool = false
-		var aliveStorageNodes []string
-		for _, storageNode := range storageNodes {
-			if dataNodesStatus[storageNode] {
-				aliveStorageNodes = append(aliveStorageNodes, storageNode)
-			} else {
-				hasDeadNode = true
+			blockInfoList = append(blockInfoList, common.BlockInfo{
+				Version:           common.MIN_VALID_VERSION_NUMBER - 1,
+				DataNodeEndpoints: server.pickDatanodes(common.BLOCK_REPLICATION),
+			})
+		} else {
+			storageNodes := storageInfo.DataNodes
+			// Filter out the alive storage nodes
+			var hasDeadNode bool = false
+			var aliveStorageNodes []string
+			for _, storageNode := range storageNodes {
+				if dataNodesStatus[storageNode] {
+					aliveStorageNodes = append(aliveStorageNodes, storageNode)
+				} else {
+					hasDeadNode = true
+				}
 			}
-		}
-		// Update the storage info if needed
-		if hasDeadNode {
-			inode.rwlock.RUnlock()
-			inode.rwlock.Lock()
-			storageInfo.DataNodes = aliveStorageNodes
-			inode.storageInfo[i] = storageInfo
-			inode.rwlock.Unlock()
-			inode.rwlock.RLock()
-		}
-		// // Randomly select an alive storage node
-		// if len(aliveStorageNodes) == 0 {
-		// 	slog.Error("no alive DataNode")
-		// 	return errors.New("no alive DataNode")
-		// }
-		// dataNode := aliveStorageNodes[rand.Intn(len(aliveStorageNodes))]
+			// Update the storage info if needed
+			if hasDeadNode {
+				inode.rwlock.RUnlock()
+				inode.rwlock.Lock()
+				storageInfo.DataNodes = aliveStorageNodes
+				inode.storageInfo[i] = storageInfo
+				inode.rwlock.Unlock()
+				inode.rwlock.RLock()
+			}
+			// // Randomly select an alive storage node
+			// if len(aliveStorageNodes) == 0 {
+			// 	slog.Error("no alive DataNode")
+			// 	return errors.New("no alive DataNode")
+			// }
+			// dataNode := aliveStorageNodes[rand.Intn(len(aliveStorageNodes))]
 
-		// TODO: should we not disclose version number to client?
-		blockInfoList = append(blockInfoList, common.BlockInfo{
-			Version:           inode.storageInfo[i].LatestVersion,
-			DataNodeEndpoints: aliveStorageNodes,
-		})
+			// TODO: should we not disclose version number to client?
+			blockInfoList = append(blockInfoList, common.BlockInfo{
+				Version:           inode.storageInfo[i].LatestVersion,
+				DataNodeEndpoints: aliveStorageNodes,
+			})
+		}
 	}
 
 	reply.BlockInfoList = blockInfoList
@@ -345,6 +372,41 @@ func (server *NameNode) getDataNodeLiveness() map[string]bool {
 		status[endpoint] = dataNode.isAlive
 	}
 	return status
+}
+
+func (server *NameNode) BumpBlockVersion(args common.BlockVersionBump, unused *bool) error {
+	// Ensure file exists
+	server.inodeRWLock.RLock()
+	oldInode, ok := server.inodes[args.FileName]
+	if !ok {
+		server.inodeRWLock.RUnlock()
+		return errors.New(fmt.Sprint("file not found: ", args.FileName))
+	}
+	server.inodeRWLock.RUnlock()
+
+	oldInode.rwlock.RLock()
+	defer oldInode.rwlock.RUnlock()
+
+	newInode := oldInode
+	newEntry := BlockStorageInfo{
+		LatestVersion: args.Version,
+		Size:          args.Size,
+		DataNodes:     args.ReplicaEndpoints,
+	}
+	if oldEntry, ok := oldInode.storageInfo[args.BlockIndex]; ok {
+		// Block exists
+		if oldEntry.LatestVersion < args.Version {
+			newInode.fileAttributes.Size -= oldEntry.Size
+			newInode.fileAttributes.Size += newEntry.Size
+			newInode.storageInfo[args.BlockIndex] = newEntry
+		}
+	} else {
+		// New block
+		newInode.fileAttributes.Size += newEntry.Size
+		newInode.storageInfo[args.BlockIndex] = newEntry
+	}
+	server.inodes[args.FileName] = newInode
+	return nil
 }
 
 // Command Line Args:

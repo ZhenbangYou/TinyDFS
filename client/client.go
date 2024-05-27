@@ -19,12 +19,12 @@ func NewDistributedFileSystem(endpoint string) DistributedFileSystem {
 	return DistributedFileSystem{endpoint: endpoint}
 }
 
-func (dfs *DistributedFileSystem) Create(path string) bool {
+func (dfs *DistributedFileSystem) Create(path string) error {
 	client, err := rpc.DialHTTP("tcp", dfs.endpoint)
 
 	if err != nil {
 		slog.Error("dialing error", "error", err)
-		return false
+		return err
 	}
 
 	var success bool
@@ -35,13 +35,13 @@ func (dfs *DistributedFileSystem) Create(path string) bool {
 	case <-asyncRpcCall.Done:
 		if asyncRpcCall.Error != nil {
 			slog.Error("Create RPC error", "error", asyncRpcCall.Error)
-			return false
+			return asyncRpcCall.Error
 		} else {
-			return success
+			return nil
 		}
 	case <-time.After(common.RPC_TIMEOUT):
 		slog.Error("Create RPC timeout", "DFS endpoint", dfs.endpoint, "file path", path)
-		return false
+		return errors.New("create timeout")
 	}
 }
 
@@ -326,10 +326,9 @@ func (writeHandle *WriteHandle) Write(data []byte) error {
 			endOffset = uint(endBlockOffset)
 		}
 
-		go func(blockInfo common.BlockInfo, beginOffset uint, endOffset uint) {
+		go func(blockInfo common.BlockInfo, blockIndex uint, beginOffset uint, endOffset uint) {
 			defer wg.Done()
-			// Randomly choose one DataNode to read the block
-			dataNodeEndpoint := blockInfo.DataNodeEndpoints[rand.Intn(len(blockInfo.DataNodeEndpoints))]
+			dataNodeEndpoint := blockInfo.DataNodeEndpoints[0]
 			dataNodeClient, err := rpc.DialHTTP("tcp", dataNodeEndpoint)
 			if err != nil {
 				slog.Error("dialing error", "error", err, "DataNode Endpoint", dataNodeEndpoint)
@@ -337,32 +336,37 @@ func (writeHandle *WriteHandle) Write(data []byte) error {
 				return
 			}
 
-			readBlockRequest := common.ReadBlockRequest{
-				FileName:    path,
-				BlockIndex:  beginBlock + uint(i),
-				BeginOffset: beginOffset,
-				Length:      endOffset - beginOffset,
+			writeBlockRequest := common.WriteBlockRequest{
+				FileName:         path,
+				BlockIndex:       blockIndex,
+				Version:          blockInfo.Version + 1,
+				BeginOffset:      beginOffset,
+				Data:             data[beginOffset+common.BLOCK_SIZE*blockIndex-writeHandle.offset : endOffset+common.BLOCK_SIZE*blockIndex-writeHandle.offset],
+				ReplicaEndpoints: blockInfo.DataNodeEndpoints,
+				IndexInChain:     0,
 			}
 
-			var readBlockResponse common.ReadBlockResponse
+			var unused bool
+			asyncRpcCall := dataNodeClient.Go("DataNode.WriteBlock", writeBlockRequest, &unused, nil)
 
-			asyncRpcCall := dataNodeClient.Go("DataNode.ReadBlock", readBlockRequest, &readBlockResponse, nil)
+			writeBlockTimeout :=
+				time.Millisecond*(common.BLOCK_SIZE*1024/common.NETWORK_BANDWIDTH)*3 +
+					common.RPC_TIMEOUT
 
 			select {
 			case <-asyncRpcCall.Done:
 				if asyncRpcCall.Error != nil {
-					slog.Error("ReadBlock RPC error", "error", asyncRpcCall.Error)
+					slog.Error("WriteBlock RPC error", "error", asyncRpcCall.Error)
 					allSucceeded = false
 				} else {
-					bufferStart := (beginBlock*common.BLOCK_SIZE + beginOffset) - offset
-					slog.Debug("ReadBlock succeeded", "Block Index", readBlockRequest.BlockIndex, "Data", readBlockResponse.Data, "BufferStart", bufferStart)
+					slog.Debug("WriteBlock succeeded", "Block Index", writeBlockRequest.BlockIndex)
 				}
-			case <-time.After(common.READ_BLOCK_TIMEOUT):
-				slog.Error("ReadBlock RPC timeout", "DataNode Endpoint", dataNodeEndpoint)
+			case <-time.After(writeBlockTimeout):
+				slog.Error("WriteBlock RPC timeout", "DataNode Endpoint", dataNodeEndpoint)
 				allSucceeded = false
 			}
 
-		}(blockInfo, beginOffset, endOffset)
+		}(blockInfo, beginBlock+uint(i), beginOffset, endOffset)
 	}
 
 	wg.Wait()
@@ -371,6 +375,8 @@ func (writeHandle *WriteHandle) Write(data []byte) error {
 		slog.Error("Failed to write all blocks")
 		return errors.New("failed to write all blocks")
 	}
+
+	writeHandle.offset += uint(len(data))
 
 	return nil
 }

@@ -42,7 +42,7 @@ type ReadBlockRequest struct {
 	BlockIndex  uint
 	Version     uint
 	BeginOffset uint
-	Length   uint
+	Length      uint
 }
 
 type ReadBlockResponse struct {
@@ -57,9 +57,15 @@ type WriteBlockRequest struct {
 
 	Data []byte
 
-	// All datanodes holding a block form a Chain Replication, hence the name
-	RemainingEndpointsInChain []string
+	// All datanodes holding a block form a Chain Replication
+	ReplicaEndpoints []string
+	IndexInChain     uint
+}
 
-	// If true, the datanode receiving this request should report to the namenode on success
-	ReportToNameNode bool
+type BlockVersionBump struct {
+	FileName         string
+	BlockIndex       uint
+	Version          uint
+	Size             uint
+	ReplicaEndpoints []string
 }
