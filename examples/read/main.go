@@ -25,8 +25,11 @@ func main() {
 	exists := dfs.Exists(*path)
 	fmt.Println("exists", exists)
 
+	readHandle := dfs.OpenForRead(*path)
+	readHandle.Seek(*offset)
+
 	// Read the specified portion of the file
-	data, err := dfs.Read(*path, *offset, *length)
+	data, err := readHandle.Read(*length)
 	if err == nil {
 		fmt.Println("read", string(data))
 	} else {

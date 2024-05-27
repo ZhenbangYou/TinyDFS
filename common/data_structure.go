@@ -5,12 +5,15 @@ type FileAttributes struct {
 }
 
 type BlockMetadata struct {
-	Size uint
+	FileName   string
+	BlockIndex uint
+	Version    uint
+	Size       uint
 }
 
 type BlockReport struct {
 	Endpoint      string
-	BlockMetadata map[string]BlockMetadata
+	BlockMetadata []BlockMetadata
 }
 
 type Heartbeat struct {
@@ -18,38 +21,51 @@ type Heartbeat struct {
 }
 
 // Request to read a file with the specified name and block range [BeginBlock, EndBlock)
-type ReadFileRequest struct {
+type GetBlockLocationsRequest struct {
 	FileName   string
 	BeginBlock uint
 	EndBlock   uint
 }
 
-type ReadFileResponse struct {
-	Succeeded     bool
+type GetBlockLocationsResponse struct {
 	BlockInfoList []BlockInfo
 }
 
 type BlockInfo struct {
-	BlockName         string
+	Version           uint
 	DataNodeEndpoints []string
 }
 
 // Request to read a block with the specified name and byte range [BeginOffset, EndOffset)
 type ReadBlockRequest struct {
-	BlockName   string
+	FileName    string
+	BlockIndex  uint
+	Version     uint
 	BeginOffset uint
-	EndOffset   uint
+	Length      uint
 }
 
 type ReadBlockResponse struct {
 	Data []byte
 }
 
-type BlockStorageInfo struct {
-	LatestVersion uint     // The latest version of the block, version = 0 represents invalid
-	Size          uint     // The size of the block
-	DataNodes     []string // DataNodes that store the latest block
+type WriteBlockRequest struct {
+	FileName    string
+	BlockIndex  uint
+	Version     uint
+	BeginOffset uint
+
+	Data []byte
+
+	// All datanodes holding a block form a Chain Replication
+	ReplicaEndpoints []string
+	IndexInChain     uint
 }
 
-// maps the BlockID to BlockStorageInfo
-type FileStorageInfo map[uint]BlockStorageInfo
+type BlockVersionBump struct {
+	FileName         string
+	BlockIndex       uint
+	Version          uint
+	Size             uint
+	ReplicaEndpoints []string
+}
