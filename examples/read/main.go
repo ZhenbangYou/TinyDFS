@@ -26,6 +26,7 @@ func main() {
 	fmt.Println("exists", exists)
 
 	readHandle := dfs.OpenForRead(*path)
+	defer readHandle.Close()
 	readHandle.Seek(*offset)
 
 	// Read the specified portion of the file
