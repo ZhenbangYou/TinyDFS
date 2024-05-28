@@ -2,12 +2,17 @@ package main
 
 import (
 	"fmt"
+	"log"
 
 	"github.com/ZhenbangYou/TinyDFS/tiny-dfs/client"
 )
 
 func main() {
-	dfs := client.NewDistributedFileSystem("localhost:8000")
+	dfs, err := client.ConnectDistributedFileSystem("localhost:8000")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer dfs.Close()
 	path := "/path/to/file"
 	success := dfs.Create(path)
 	fmt.Println("create", success)

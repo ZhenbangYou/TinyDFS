@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"log"
 
 	"github.com/ZhenbangYou/TinyDFS/tiny-dfs/client"
 )
@@ -19,14 +20,17 @@ func main() {
 	fmt.Println("serverAddr", *serverAddr, "path", *path, "offset", *offset, "length", *length)
 
 	// Create a new DistributedFileSystem client
-	dfs := client.NewDistributedFileSystem(*serverAddr)
+	dfs, err := client.ConnectDistributedFileSystem(*serverAddr)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer dfs.Close()
 
 	// Check if the file exists
 	exists := dfs.Exists(*path)
 	fmt.Println("exists", exists)
 
 	readHandle := dfs.OpenForRead(*path)
-	defer readHandle.Close()
 	readHandle.Seek(*offset)
 
 	// Read the specified portion of the file
