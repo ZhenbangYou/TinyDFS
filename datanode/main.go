@@ -327,6 +327,7 @@ func (datanode *DataNode) WriteBlock(args *common.WriteBlockRequest, unused *boo
 			Version:          args.Version,
 			Size:             blockSize,
 			ReplicaEndpoints: args.ReplicaEndpoints,
+			LeaseToken:       args.LeaseToken,
 		}
 
 		var unused bool
@@ -370,12 +371,12 @@ func (datanode *DataNode) WriteBlock(args *common.WriteBlockRequest, unused *boo
 			// back successfully
 			slog.Error("Write block to next datanode error",
 				"error", err,
-				"next datanode endpoint", args.ReplicaEndpoints[args.IndexInChain+1])
+				"next datanode endpoint", args.ReplicaEndpoints[writeBlockRequest.IndexInChain])
 			return errors.New(
 				fmt.Sprintln(
 					"Write block to next datanode error",
 					"error", err,
-					"next datanode endpoint", args.ReplicaEndpoints[args.IndexInChain+1]))
+					"next datanode endpoint", args.ReplicaEndpoints[writeBlockRequest.IndexInChain]))
 		} else {
 			slog.Info("Write block to next datanode succeeded")
 			os.Remove(prevPath)

@@ -255,9 +255,12 @@ func (dfs *DistributedFileSystem) read(path string, offset uint, length uint) ([
 }
 
 type WriteHandle struct {
-	dfs    *DistributedFileSystem
-	path   string
-	offset uint
+	dfs            *DistributedFileSystem
+	path           string
+	offset         uint
+	leaseToken     uint64
+	namenodeClient *rpc.Client
+	closed         bool
 }
 
 func (dfs *DistributedFileSystem) OpenForWrite(path string) WriteHandle {
@@ -289,26 +292,48 @@ func (writeHandle *WriteHandle) Write(data []byte) error {
 	endBlockOffset := (offset+length-1)%common.BLOCK_SIZE + 1
 
 	// Step 2: Get the block metadata from the NameNode
+	if writeHandle.namenodeClient == nil {
+		namenodeClient, err := rpc.DialHTTP("tcp", dfs.endpoint)
+		if err != nil {
+			slog.Error("dialing error", "error", err)
+			return err
+		}
+		writeHandle.namenodeClient = namenodeClient
+	}
+
+	for writeHandle.leaseToken == 0 {
+		writeHandle.leaseToken = rand.Uint64()
+	}
+
 	getBlockLocationsRequest := common.GetBlockLocationsRequest{
 		FileName:   path,
 		BeginBlock: uint(beginBlock),
 		EndBlock:   uint(endBlock),
+		LeaseToken: writeHandle.leaseToken,
 	}
 
 	var getBlockLocationsResponse common.GetBlockLocationsResponse
-	client, err := rpc.DialHTTP("tcp", dfs.endpoint)
-	if err != nil {
-		slog.Error("dialing error", "error", err)
-		return err
-	}
-
-	err = client.Call("NameNode.GetBlockLocations", getBlockLocationsRequest, &getBlockLocationsResponse)
+	err := writeHandle.namenodeClient.Call("NameNode.GetBlockLocations",
+		getBlockLocationsRequest, &getBlockLocationsResponse)
 	if err != nil {
 		slog.Error("Error during GetBlockLocations Request", "error", err)
 		return err
 	}
 
 	slog.Info("GetBlockLocations succeeded", "file", path, "BlockInfoList", getBlockLocationsResponse.BlockInfoList)
+
+	go func() {
+		time.Sleep(common.LEASE_RENEWAL_INTERVAL)
+
+		for !writeHandle.closed {
+			var unused bool
+			writeHandle.namenodeClient.Call("NameNode.RenewLease", common.LeaseRenewalRequest{
+				FileName:   writeHandle.path,
+				LeaseToken: writeHandle.leaseToken,
+			}, &unused)
+			time.Sleep(common.LEASE_RENEWAL_INTERVAL)
+		}
+	}()
 
 	// Step 3: Read the blocks from the DataNodes in parallel
 	var wg sync.WaitGroup
@@ -344,6 +369,7 @@ func (writeHandle *WriteHandle) Write(data []byte) error {
 				Data:             data[beginOffset+common.BLOCK_SIZE*blockIndex-writeHandle.offset : endOffset+common.BLOCK_SIZE*blockIndex-writeHandle.offset],
 				ReplicaEndpoints: blockInfo.DataNodeEndpoints,
 				IndexInChain:     0,
+				LeaseToken:       writeHandle.leaseToken,
 			}
 
 			var unused bool
@@ -381,4 +407,16 @@ func (writeHandle *WriteHandle) Write(data []byte) error {
 	return nil
 }
 
-func (writeHandle *WriteHandle) Close() {}
+func (writeHandle *WriteHandle) Close() {
+	writeHandle.closed = true
+	if writeHandle.namenodeClient != nil && writeHandle.leaseToken != 0 {
+		var unused bool
+		writeHandle.namenodeClient.Call("NameNode.RevokeLease", common.LeaseRenewalRequest{
+			FileName:   writeHandle.path,
+			LeaseToken: writeHandle.leaseToken,
+		}, &unused)
+	}
+	if writeHandle.namenodeClient != nil {
+		writeHandle.namenodeClient.Close()
+	}
+}

@@ -25,10 +25,16 @@ type BlockStorageInfo struct {
 // Key: Block Index
 type FileStorageInfo map[uint]BlockStorageInfo
 
+type Lease struct {
+	leaseToken           uint64
+	lastRenewalTimestamp time.Time
+}
+
 type iNode struct {
 	fileAttributes common.FileAttributes
 	rwlock         *sync.RWMutex // Per-file rwlock
 	storageInfo    FileStorageInfo
+	lease          Lease
 }
 
 type DataNodeInfo struct {
@@ -291,7 +297,7 @@ func (server *NameNode) pickDatanodes(num uint) []string {
 
 // GetBlockLocations handles the read request from the client,
 // and returns (Block Name, DataNode Endpoint) pair for each block
-// If the block doesn't exist but the file exist, the version of the block will be 
+// If the block doesn't exist but the file exist, the version of the block will be
 // `common.MIN_VALID_VERSION_NUMBER - 1`
 // TODO: only return DataNode Endpoint ?
 func (server *NameNode) GetBlockLocations(args *common.GetBlockLocationsRequest, reply *common.GetBlockLocationsResponse) error {
@@ -310,6 +316,20 @@ func (server *NameNode) GetBlockLocations(args *common.GetBlockLocationsRequest,
 
 	inode.rwlock.RLock()
 	defer inode.rwlock.RUnlock()
+
+	if args.LeaseToken > 0 {
+		if inode.lease.leaseToken == 0 ||
+			inode.lease.leaseToken == args.LeaseToken ||
+			time.Since(inode.lease.lastRenewalTimestamp) > common.LEASE_TIMEOUT {
+			inode.lease.leaseToken = args.LeaseToken
+			inode.lease.lastRenewalTimestamp = time.Now()
+
+			server.inodes[args.FileName] = inode
+		} else {
+			fmt.Println(inode.lease.leaseToken, args.LeaseToken)
+			return errors.New("lease is owned by other client")
+		}
+	}
 
 	var blockInfoList []common.BlockInfo
 	for i := args.BeginBlock; i < args.EndBlock; i++ {
@@ -387,6 +407,11 @@ func (server *NameNode) BumpBlockVersion(args common.BlockVersionBump, unused *b
 	oldInode.rwlock.RLock()
 	defer oldInode.rwlock.RUnlock()
 
+	if args.LeaseToken != oldInode.lease.leaseToken {
+		return errors.New(fmt.Sprint("Lease doesn't match",
+			" actual lease token:", oldInode.lease.leaseToken, " got", args.LeaseToken))
+	}
+
 	newInode := oldInode
 	newEntry := BlockStorageInfo{
 		LatestVersion: args.Version,
@@ -406,6 +431,46 @@ func (server *NameNode) BumpBlockVersion(args common.BlockVersionBump, unused *b
 		newInode.storageInfo[args.BlockIndex] = newEntry
 	}
 	server.inodes[args.FileName] = newInode
+	return nil
+}
+
+func (server *NameNode) RenewLease(args common.LeaseRenewalRequest, unused *bool) error {
+	// Ensure file exists
+	server.inodeRWLock.RLock()
+	inode, ok := server.inodes[args.FileName]
+	if !ok {
+		server.inodeRWLock.RUnlock()
+		return errors.New(fmt.Sprint("file not found: ", args.FileName))
+	}
+	server.inodeRWLock.RUnlock()
+
+	inode.rwlock.RLock()
+	defer inode.rwlock.RUnlock()
+
+	if args.LeaseToken != inode.lease.leaseToken {
+		return errors.New("Lease doesn't match")
+	}
+	inode.lease.lastRenewalTimestamp = time.Now()
+	return nil
+}
+
+func (server *NameNode) RevokeLease(args common.LeaseRenewalRequest, unused *bool) error {
+	// Ensure file exists
+	server.inodeRWLock.RLock()
+	inode, ok := server.inodes[args.FileName]
+	if !ok {
+		server.inodeRWLock.RUnlock()
+		return errors.New(fmt.Sprint("file not found: ", args.FileName))
+	}
+	server.inodeRWLock.RUnlock()
+
+	inode.rwlock.RLock()
+	defer inode.rwlock.RUnlock()
+
+	if args.LeaseToken != inode.lease.leaseToken {
+		return errors.New("Lease doesn't match")
+	}
+	inode.lease.leaseToken = 0
 	return nil
 }
 
