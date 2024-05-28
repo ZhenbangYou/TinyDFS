@@ -11,3 +11,6 @@ const NETWORK_BANDWIDTH = 100 * 1024 * 1024 // 100MB/s
 const READ_BLOCK_TIMEOUT = 3*time.Duration(BLOCK_SIZE/NETWORK_BANDWIDTH)*time.Second + RPC_TIMEOUT
 
 const MIN_VALID_VERSION_NUMBER = 1
+
+const LEASE_TIMEOUT = 6 * time.Second
+const LEASE_RENEWAL_INTERVAL = 3 * time.Second

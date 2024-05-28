@@ -25,6 +25,7 @@ type GetBlockLocationsRequest struct {
 	FileName   string
 	BeginBlock uint
 	EndBlock   uint
+	LeaseToken uint64 // Client endpoint applying for a lease should supply a non-zero token
 }
 
 type GetBlockLocationsResponse struct {
@@ -60,6 +61,8 @@ type WriteBlockRequest struct {
 	// All datanodes holding a block form a Chain Replication
 	ReplicaEndpoints []string
 	IndexInChain     uint
+
+	LeaseToken uint64
 }
 
 type BlockVersionBump struct {
@@ -68,4 +71,10 @@ type BlockVersionBump struct {
 	Version          uint
 	Size             uint
 	ReplicaEndpoints []string
+	LeaseToken       uint64
+}
+
+type LeaseRenewalRequest struct {
+	FileName   string
+	LeaseToken uint64
 }
