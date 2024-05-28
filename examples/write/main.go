@@ -18,13 +18,17 @@ func main() {
 	fmt.Println("serverAddr", *serverAddr, "path", *path)
 
 	// Create a new DistributedFileSystem client
-	dfs := client.NewDistributedFileSystem(*serverAddr)
+	dfs, err := client.ConnectDistributedFileSystem(*serverAddr)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer dfs.Close()
 
 	if dfs.Exists(*path) {
 		dfs.Delete(*path)
 	}
 
-	err := dfs.Create(*path)
+	err = dfs.Create(*path)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -39,7 +43,6 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	writeHandle.Close()
 
 	readHandle := dfs.OpenForRead(*path)
 
