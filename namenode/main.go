@@ -113,10 +113,9 @@ func (server *NameNode) GetAttributes(path string, fileAttributes *common.FileAt
 func (server *NameNode) RegisterDataNode(dataNodeEndpoint string, success *bool) error {
 	slog.Info("RegisterDataNode request", "dataNodeEndpoint", dataNodeEndpoint)
 
-	server.inodeRWLock.Lock()
-	defer server.inodeRWLock.Unlock()
+	server.datanodeRWLock.Lock()
+	defer server.datanodeRWLock.Unlock()
 
-	// TODO: Check if the datanode is already registered
 	server.datanodes[dataNodeEndpoint] = DataNodeInfo{
 		heartbeatReceived: true,
 		isAlive:           true,
@@ -280,17 +279,11 @@ func (server *NameNode) replicationMonitor() {
 					}
 					dataNodeEndpoint := aliveStorageNodes[rand.Intn(len(aliveStorageNodes))]
 
-					// Randomly pick datanodes that don't hold the block to replicate
-					// TODO use pickDatanodes that only picks datanodes that don't hold the block?
-					var replicaEndpoints []string
-					for endpoint := range server.datanodes {
-						if len(replicaEndpoints) >= common.BLOCK_REPLICATION-len(storageInfo.DataNodes) {
-							break
-						}
-						if !slices.Contains(storageInfo.DataNodes, endpoint) {
-							replicaEndpoints = append(replicaEndpoints, endpoint)
-						}
-					}
+					// Pick datanodes that don't hold the block to replicate
+					replicaEndpoints := server.pickDatanodes(
+						uint(common.BLOCK_REPLICATION-len(storageInfo.DataNodes)),
+						storageInfo.DataNodes,
+					)
 
 					// Schedule replication: send a replication request to the datanode
 					go func(fileName string, blockIndex uint, replicaEndpoints []string, version uint, dataNodeEndpoint string) {
@@ -351,8 +344,8 @@ func (server *NameNode) replicationMonitor() {
 func (server *NameNode) Heartbeat(heartbeat common.Heartbeat, success *bool) error {
 	slog.Info("Receive Heartbeat", "dataNodeEndpoint", heartbeat.Endpoint)
 
-	server.inodeRWLock.Lock()
-	defer server.inodeRWLock.Unlock()
+	server.datanodeRWLock.Lock()
+	defer server.datanodeRWLock.Unlock()
 
 	// If the datanode is not registered, ignore the heartbeat
 	if _, exists := server.datanodes[heartbeat.Endpoint]; !exists {
@@ -380,6 +373,7 @@ func (server *NameNode) heartbeatMonitor() {
 		for endpoint, dataNode := range server.datanodes {
 			if !dataNode.heartbeatReceived {
 				// The datanode hasn't sent a heartbeat
+				slog.Info("DataNode missed heartbeat", "dataNodeEndpoint", endpoint)
 				server.datanodes[endpoint] = DataNodeInfo{
 					heartbeatReceived: false,
 					isAlive:           false,
@@ -396,8 +390,8 @@ func (server *NameNode) heartbeatMonitor() {
 }
 
 // Pick `num` datanodes to hold a new block
-// TODO: optimize selection for load balancing
-func (server *NameNode) pickDatanodes(num uint) []string {
+// Optimized selection for load balancing
+func (server *NameNode) pickDatanodes(num uint, ignore []string) []string {
 	result := make([]string, 0, num)
 
 	iter := server.datanodeLoadRank.Iterator()
@@ -406,11 +400,23 @@ func (server *NameNode) pickDatanodes(num uint) []string {
 			break
 		}
 		for endpoint, _ := range iter.Value().(map[string]bool) {
+			// ignore datanode that is down
+			if !server.datanodes[endpoint].isAlive {
+				continue
+			}
+			// if ignore list is provided, ignore datanode in the ignore list
+			if ignore != nil && slices.Contains(ignore, endpoint) {
+				continue
+			}
 			result = append(result, endpoint)
 			if uint(len(result)) == num {
 				break
 			}
 		}
+	}
+
+	if uint(len(result)) < num {
+		slog.Warn("Not enough available DataNodes")
 	}
 
 	return result
@@ -457,7 +463,7 @@ func (server *NameNode) GetBlockLocations(args *common.GetBlockLocationsRequest,
 		if !exist {
 			blockInfoList = append(blockInfoList, common.BlockInfo{
 				Version:           common.MIN_VALID_VERSION_NUMBER - 1,
-				DataNodeEndpoints: server.pickDatanodes(common.BLOCK_REPLICATION),
+				DataNodeEndpoints: server.pickDatanodes(common.BLOCK_REPLICATION, nil),
 			})
 		} else {
 			storageNodes := storageInfo.DataNodes

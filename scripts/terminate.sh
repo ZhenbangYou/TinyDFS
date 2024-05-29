@@ -43,4 +43,8 @@ echo "Deleted DataNode test file directory: $DATANODE_DIR"
 rm -rf "$LOG_DIR"
 echo "Deleted logs directory: $LOG_DIR"
 
+# Delete the PID directory
+rm -rf "$PID_DIR"
+echo "Deleted PID directory: $PID_DIR"
+
 echo "Termination complete."
