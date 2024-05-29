@@ -71,7 +71,6 @@ func (datanode *DataNode) sendBlockReport() bool {
 		slog.Error("error dialing namenode", "error", err)
 		return false
 	}
-	defer client.Close()
 
 	blockReport := datanode.generateBlockReport()
 	var success bool
@@ -97,7 +96,6 @@ func (datanode *DataNode) registerWithNameNode() bool {
 		slog.Error("error dialing namenode", "error", err)
 		return false
 	}
-	defer client.Close()
 
 	var success bool
 	err = client.Call("NameNode.RegisterDataNode", datanode.dataNodeEndpoint, &success)
@@ -161,7 +159,6 @@ func (datanode *DataNode) heartbeatLoop() {
 			}
 			lastHeartbeatSucceeded = true
 		}
-		client.Close()
 
 		time.Sleep(common.HEARTBEAT_INTERVAL)
 	}
@@ -322,7 +319,6 @@ func (datanode *DataNode) WriteBlock(args *common.WriteBlockRequest, unused *boo
 			slog.Error("dialing namanode error", "error", err)
 			return err
 		}
-		defer client.Close()
 
 		bumpBlockVersionRequest := common.BlockVersionBump{
 			FileName:         args.FileName,
@@ -360,7 +356,6 @@ func (datanode *DataNode) WriteBlock(args *common.WriteBlockRequest, unused *boo
 				"next datanode endpoint", args.ReplicaEndpoints[args.IndexInChain+1])
 			return err
 		}
-		defer client.Close()
 
 		writeBlockRequest := args
 		writeBlockRequest.IndexInChain += 1
@@ -390,7 +385,7 @@ func (datanode *DataNode) WriteBlock(args *common.WriteBlockRequest, unused *boo
 }
 
 func (datanode *DataNode) CreateReplication(args *common.CreateReplicationRequest, unused *bool) error {
-	slog.Info("CreateReplication request", "block info", args)
+	slog.Info("CreateReplication request")
 
 	curPath := constructBlockName(args.FileName, args.BlockIndex, args.Version)
 
@@ -457,6 +452,7 @@ func (datanode *DataNode) ReplicateBlock(args *common.ReplicateBlockRequest, unu
 	curFile.Close()
 
 	if args.IndexInChain+1 == uint(len(args.ReplicaEndpoints)) {
+		slog.Info("Last datanode in chain, replication succeeded")
 		return nil
 	} else {
 		// Call the next node in chain
@@ -468,7 +464,6 @@ func (datanode *DataNode) ReplicateBlock(args *common.ReplicateBlockRequest, unu
 				"next datanode endpoint", args.ReplicaEndpoints[args.IndexInChain+1])
 			return err
 		}
-		defer client.Close()
 
 		replicateBlockRequest := args
 		replicateBlockRequest.IndexInChain += 1
@@ -552,5 +547,7 @@ func main() {
 	if err != nil {
 		panic(fmt.Sprintln("Failed to start DataNode RPC server, listen error", err))
 	}
-	http.Serve(listener, nil)
+	go http.Serve(listener, nil)
+
+	select {}
 }
