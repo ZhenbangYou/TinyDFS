@@ -227,6 +227,115 @@ func (server *NameNode) ReportBlock(blockReport common.BlockReport, success *boo
 	return nil
 }
 
+// NameNode checks if blocks are under-replicated and schedules replication
+func (server *NameNode) replicationMonitor() {
+	slog.Info("Replication monitor setup")
+
+	for {
+		time.Sleep(common.REPLICATION_MONITOR_INTERVAL) // Check periodically
+		slog.Info("Replication monitor running")
+
+		// test to send datanode TestRPC
+		// dataNodeEndpoint := "localhost:5001"
+		// dataNodeClient, err := rpc.Dial("tcp", dataNodeEndpoint)
+		// if err != nil {
+		// 	slog.Error("dialing datanode failed", "datanode endpoint", dataNodeEndpoint, "error", err)
+		// 	return
+		// }
+		// slog.Debug("sending RPCTest")
+		// var unused bool
+
+		// asyncRpcCall := dataNodeClient.Go("DataNode.RPCTest", "hello world", &unused, nil)
+		// select {
+		// case <-asyncRpcCall.Done:
+		// 	if asyncRpcCall.Error != nil {
+		// 		slog.Error("Error during RPCTest request", "error", asyncRpcCall.Error)
+		// 	} else {
+		// 		slog.Info("RPCTest success")
+		// 	}
+		// case <-time.After(1 * time.Second):
+		// 	slog.Error("RPCTest timeout")
+		// }
+
+		for fileName, inode := range server.inodes {
+			inode.rwlock.RLock()
+			for blockIndex, storageInfo := range inode.storageInfo {
+				if len(storageInfo.DataNodes) < common.BLOCK_REPLICATION && storageInfo.LatestVersion > 0 {
+					// Under-replicated block
+					slog.Info("Under-replicated block", "fileName", inode.fileAttributes, "blockIndex", blockIndex)
+
+					// Pick datanodes to replicate the block
+					replicaEndpoints := server.pickDatanodes(common.BLOCK_REPLICATION - uint(len(storageInfo.DataNodes)))
+
+					// Pick an alive datanode holding the block to replicate
+					var aliveStorageNodes []string
+					for _, storageNode := range storageInfo.DataNodes {
+						if server.datanodes[storageNode].isAlive {
+							aliveStorageNodes = append(aliveStorageNodes, storageNode)
+						}
+					}
+					if len(aliveStorageNodes) == 0 {
+						slog.Error("No alive storage nodes available for replication", "fileName", fileName, "blockIndex", blockIndex)
+						continue
+					}
+					dataNodeEndpoint := aliveStorageNodes[rand.Intn(len(aliveStorageNodes))]
+
+					// Schedule replication: send a replication request to the datanode
+					go func(fileName string, blockIndex uint, replicaEndpoints []string, version uint, dataNodeEndpoint string) {
+						server.datanodeRWLock.RLock()
+						defer server.datanodeRWLock.RUnlock()
+
+						createReplicationRequest := common.CreateReplicationRequest{
+							FileName:         fileName,
+							BlockIndex:       blockIndex,
+							Version:          version,
+							ReplicaEndpoints: replicaEndpoints,
+						}
+
+						dataNodeClient, err := rpc.Dial("tcp", dataNodeEndpoint)
+						if err != nil {
+							slog.Error("dialing datanode failed", "datanode endpoint", dataNodeEndpoint, "error", err)
+							return
+						}
+
+						replicateBlockTimeout :=
+							time.Millisecond*(common.BLOCK_SIZE*1024/common.NETWORK_BANDWIDTH)*3 +
+								common.RPC_TIMEOUT
+
+						slog.Info("Send replication request", "fileName", fileName, "blockIndex", blockIndex, "replicaEndpoints", replicaEndpoints, "dataNodeEndpoint", dataNodeEndpoint)
+						slog.Debug("create", slog.Any("createReplicationRequest", createReplicationRequest))
+
+						var unused bool
+
+						asyncRpcCall := dataNodeClient.Go("DataNode.CreateReplication", createReplicationRequest, &unused, nil)
+
+						select {
+						case <-asyncRpcCall.Done:
+							if asyncRpcCall.Error != nil {
+								slog.Error("Error during Create Replication request", "error", asyncRpcCall.Error)
+							} else {
+								// Update the storage info
+								inode.rwlock.Lock()
+								storageInfo.DataNodes = append(storageInfo.DataNodes, replicaEndpoints...)
+								inode.storageInfo[blockIndex] = storageInfo
+								inode.rwlock.Unlock()
+								server.inodes[fileName] = inode
+								slog.Info("Replication request success", "fileName", fileName, "blockIndex", blockIndex, "replicaEndpoints", replicaEndpoints)
+							}
+						case <-time.After(replicateBlockTimeout):
+							slog.Error("Replication request timeout", "fileName", fileName, "blockIndex", blockIndex, "replicaEndpoints", replicaEndpoints)
+						}
+
+					}(fileName, blockIndex, replicaEndpoints, storageInfo.LatestVersion, dataNodeEndpoint)
+
+				}
+			}
+			inode.rwlock.RUnlock()
+		}
+		slog.Info("Replication monitor finished")
+	}
+}
+
 func (server *NameNode) Heartbeat(heartbeat common.Heartbeat, success *bool) error {
 	slog.Info("Receive Heartbeat", "dataNodeEndpoint", heartbeat.Endpoint)
 
@@ -251,6 +360,7 @@ func (server *NameNode) Heartbeat(heartbeat common.Heartbeat, success *bool) err
 }
 
 func (server *NameNode) heartbeatMonitor() {
+	slog.Info("Heartbeat monitor setup")
 	for {
 		time.Sleep(common.HEARTBEAT_MONITOR_INTERVAL) // Check periodically
 
@@ -299,7 +409,6 @@ func (server *NameNode) pickDatanodes(num uint) []string {
 // and returns (Block Name, DataNode Endpoint) pair for each block
 // If the block doesn't exist but the file exist, the version of the block will be
 // `common.MIN_VALID_VERSION_NUMBER - 1`
-// TODO: only return DataNode Endpoint ?
 func (server *NameNode) GetBlockLocations(args *common.GetBlockLocationsRequest, reply *common.GetBlockLocationsResponse) error {
 	slog.Info("GetBlockLocations", "file", args.FileName)
 
@@ -367,7 +476,6 @@ func (server *NameNode) GetBlockLocations(args *common.GetBlockLocationsRequest,
 			// }
 			// dataNode := aliveStorageNodes[rand.Intn(len(aliveStorageNodes))]
 
-			// TODO: should we not disclose version number to client?
 			blockInfoList = append(blockInfoList, common.BlockInfo{
 				Version:           inode.storageInfo[i].LatestVersion,
 				DataNodeEndpoints: aliveStorageNodes,
@@ -530,5 +638,8 @@ func main() {
 
 	// Start the heartbeat monitor
 	go server.heartbeatMonitor()
+
+	// Start the replication monitor
+	go server.replicationMonitor()
 
 }

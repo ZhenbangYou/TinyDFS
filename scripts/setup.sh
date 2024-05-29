@@ -23,7 +23,8 @@ mkdir -p "$DATANODE_DIR"
 mkdir -p "$LOG_DIR"
 
 # Write Datanode test files
-python ./scripts/write_test_file.py --file_path test --block_num 1
+# test is under-replicated
+python ./scripts/write_test_file.py --file_path test --block_num 1 --block_replication 2
 python ./scripts/write_test_file.py --file_path test_dir/test2
 
 # Start Namenode

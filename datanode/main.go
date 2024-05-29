@@ -65,13 +65,13 @@ func (datanode *DataNode) generateBlockReport() common.BlockReport {
 	}
 }
 
-// TODO: receive response to deal with stale blocks
 func (datanode *DataNode) sendBlockReport() bool {
 	client, err := rpc.DialHTTP("tcp", datanode.nameNodeEndpoint)
 	if err != nil {
 		slog.Error("error dialing namenode", "error", err)
 		return false
 	}
+	defer client.Close()
 
 	blockReport := datanode.generateBlockReport()
 	var success bool
@@ -97,6 +97,7 @@ func (datanode *DataNode) registerWithNameNode() bool {
 		slog.Error("error dialing namenode", "error", err)
 		return false
 	}
+	defer client.Close()
 
 	var success bool
 	err = client.Call("NameNode.RegisterDataNode", datanode.dataNodeEndpoint, &success)
@@ -160,6 +161,7 @@ func (datanode *DataNode) heartbeatLoop() {
 			}
 			lastHeartbeatSucceeded = true
 		}
+		client.Close()
 
 		time.Sleep(common.HEARTBEAT_INTERVAL)
 	}
@@ -320,6 +322,7 @@ func (datanode *DataNode) WriteBlock(args *common.WriteBlockRequest, unused *boo
 			slog.Error("dialing namanode error", "error", err)
 			return err
 		}
+		defer client.Close()
 
 		bumpBlockVersionRequest := common.BlockVersionBump{
 			FileName:         args.FileName,
@@ -357,6 +360,7 @@ func (datanode *DataNode) WriteBlock(args *common.WriteBlockRequest, unused *boo
 				"next datanode endpoint", args.ReplicaEndpoints[args.IndexInChain+1])
 			return err
 		}
+		defer client.Close()
 
 		writeBlockRequest := args
 		writeBlockRequest.IndexInChain += 1
@@ -380,6 +384,108 @@ func (datanode *DataNode) WriteBlock(args *common.WriteBlockRequest, unused *boo
 		} else {
 			slog.Info("Write block to next datanode succeeded")
 			os.Remove(prevPath)
+			return nil
+		}
+	}
+}
+
+func (datanode *DataNode) CreateReplication(args *common.CreateReplicationRequest, unused *bool) error {
+	slog.Info("CreateReplication request", "block info", args)
+
+	curPath := constructBlockName(args.FileName, args.BlockIndex, args.Version)
+
+	// Open the existing block file
+	srcFile, err := os.Open(curPath)
+	if err != nil {
+		slog.Error("error opening source block file for replication", "error", err)
+		return err
+	}
+	defer srcFile.Close()
+
+	// Read the entire block file
+	srcData, err := io.ReadAll(srcFile)
+	if err != nil {
+		slog.Error("error reading source block file for replication", "error", err)
+		return err
+	}
+
+	// Construct the ReplicateBlockRequest
+	createReplicationRequest := common.ReplicateBlockRequest{
+		FileName:         args.FileName,
+		BlockIndex:       args.BlockIndex,
+		Version:          args.Version,
+		Data:             srcData,
+		ReplicaEndpoints: args.ReplicaEndpoints,
+		IndexInChain:     0,
+	}
+
+	// Send the block to the first datanode in the list
+	client, err := rpc.DialHTTP("tcp", args.ReplicaEndpoints[0])
+	if err != nil {
+		slog.Error("dialing the first datanode error",
+			"error", err,
+			"first datanode endpoint", args.ReplicaEndpoints[0])
+		return err
+	}
+
+	err = client.Call("DataNode.ReplicateBlock", &createReplicationRequest, &unused)
+	if err != nil {
+		slog.Error("ReplicateBlock RPC error", "error", err)
+		return err
+	}
+
+	return nil
+}
+
+func (datanode *DataNode) ReplicateBlock(args *common.ReplicateBlockRequest, unused *bool) error {
+	slog.Info("ReplicateBlock request", "block info", args)
+
+	curPath := constructBlockName(args.FileName, args.BlockIndex, args.Version)
+	curFile, err := os.Create(curPath)
+	if err != nil {
+		slog.Error("error creating file", "error", err)
+		return err
+	}
+
+	// Write data
+	_, err = curFile.WriteAt(args.Data, 0)
+	if err != nil {
+		slog.Error("Write block error", "error", err)
+		os.Remove(curPath)
+		return err
+	}
+	curFile.Close()
+
+	if args.IndexInChain+1 == uint(len(args.ReplicaEndpoints)) {
+		return nil
+	} else {
+		// Call the next node in chain
+
+		client, err := rpc.DialHTTP("tcp", args.ReplicaEndpoints[args.IndexInChain+1])
+		if err != nil {
+			slog.Error("dialing next datanode error",
+				"error", err,
+				"next datanode endpoint", args.ReplicaEndpoints[args.IndexInChain+1])
+			return err
+		}
+		defer client.Close()
+
+		replicateBlockRequest := args
+		replicateBlockRequest.IndexInChain += 1
+		var unused bool
+		err = client.Call("DataNode.ReplicateBlock", &replicateBlockRequest, &unused)
+
+		if err != nil {
+			slog.Error("Replicate block to next datanode error",
+				"error", err,
+				"next datanode endpoint", args.ReplicaEndpoints[replicateBlockRequest.IndexInChain])
+			return errors.New(
+				fmt.Sprintln(
+					"Replicate block to next datanode error",
+					"error", err,
+					"next datanode endpoint", args.ReplicaEndpoints[replicateBlockRequest.IndexInChain]))
+		} else {
+			slog.Info("Replicate block to next datanode succeeded")
 			return nil
 		}
 	}

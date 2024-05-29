@@ -174,10 +174,19 @@ func (readHandle *ReadHandle) Read(length uint) ([]byte, error) {
 	}
 
 	var getBlockLocationsResponse common.GetBlockLocationsResponse
-	err := readHandle.namenodeClient.Call("NameNode.GetBlockLocations", getBlockLocationsRequest, &getBlockLocationsResponse)
-	if err != nil {
-		slog.Error("Error during GetBlockLocations Request", "error", err)
-		return nil, err
+	asyncRpcCall := readHandle.namenodeClient.Go("NameNode.GetBlockLocations", getBlockLocationsRequest, &getBlockLocationsResponse, nil)
+
+	select {
+	case <-asyncRpcCall.Done:
+		if asyncRpcCall.Error != nil {
+			slog.Error("Error during GetBlockLocations Request", "error", asyncRpcCall.Error)
+			return nil, asyncRpcCall.Error
+		} else {
+			break
+		}
+	case <-time.After(common.RPC_TIMEOUT):
+		slog.Error("GetBlockLocations Request timeout", "DFS endpoint", readHandle.dfs.endpoint, "file name", readHandle.fileName)
+		return nil, errors.New("GetBlockLocations Request timeout")
 	}
 
 	slog.Info("GetBlockLocations succeeded", "file", readHandle.fileName, "BlockInfoList", getBlockLocationsResponse.BlockInfoList)
@@ -249,7 +258,7 @@ func (readHandle *ReadHandle) Read(length uint) ([]byte, error) {
 
 	readHandle.offset += uint(len(dataBuffer))
 
-	return dataBuffer, err
+	return dataBuffer, nil
 }
 
 func (readHandle *ReadHandle) Close() {
@@ -317,11 +326,19 @@ func (writeHandle *WriteHandle) Write(data []byte) error {
 	}
 
 	var getBlockLocationsResponse common.GetBlockLocationsResponse
-	err := writeHandle.namenodeClient.Call("NameNode.GetBlockLocations",
-		getBlockLocationsRequest, &getBlockLocationsResponse)
-	if err != nil {
-		slog.Error("Error during GetBlockLocations Request", "error", err)
-		return err
+	asyncRpcCall := writeHandle.namenodeClient.Go("NameNode.GetBlockLocations", getBlockLocationsRequest, &getBlockLocationsResponse, nil)
+
+	select {
+	case <-asyncRpcCall.Done:
+		if asyncRpcCall.Error != nil {
+			slog.Error("Error during GetBlockLocations Request", "error", asyncRpcCall.Error)
+			return asyncRpcCall.Error
+		} else {
+			break
+		}
+	case <-time.After(common.RPC_TIMEOUT):
+		slog.Error("GetBlockLocations Request timeout", "DFS endpoint", writeHandle.dfs.endpoint, "file name", writeHandle.fileName)
+		return errors.New("GetBlockLocations Request timeout")
 	}
 
 	slog.Info("GetBlockLocations succeeded", "file", fileName, "BlockInfoList", getBlockLocationsResponse.BlockInfoList)
@@ -339,7 +356,7 @@ func (writeHandle *WriteHandle) Write(data []byte) error {
 		}
 	}()
 
-	// Step 3: Read the blocks from the DataNodes in parallel
+	// Step 3: Write the blocks to the DataNodes in parallel
 	var wg sync.WaitGroup
 	allSucceeded := true
 
