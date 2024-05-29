@@ -12,24 +12,28 @@ import (
 )
 
 type DistributedFileSystem struct {
-	endpoint string
+	endpoint       string
+	namenodeClient *rpc.Client
 }
 
-func NewDistributedFileSystem(endpoint string) DistributedFileSystem {
-	return DistributedFileSystem{endpoint: endpoint}
-}
-
-func (dfs *DistributedFileSystem) Create(fileName string) error {
-	client, err := rpc.DialHTTP("tcp", dfs.endpoint)
+func ConnectDistributedFileSystem(endpoint string) (DistributedFileSystem, error) {
+	namenodeClient, err := rpc.DialHTTP("tcp", endpoint)
 
 	if err != nil {
 		slog.Error("dialing error", "error", err)
-		return err
+		return DistributedFileSystem{}, err
 	}
 
-	var success bool
+	return DistributedFileSystem{endpoint: endpoint, namenodeClient: namenodeClient}, nil
+}
 
-	asyncRpcCall := client.Go("NameNode.Create", fileName, &success, nil)
+func (dfs *DistributedFileSystem) Close() {
+	dfs.namenodeClient.Close()
+}
+
+func (dfs *DistributedFileSystem) Create(fileName string) error {
+	var success bool
+	asyncRpcCall := dfs.namenodeClient.Go("NameNode.Create", fileName, &success, nil)
 
 	select {
 	case <-asyncRpcCall.Done:
@@ -46,16 +50,8 @@ func (dfs *DistributedFileSystem) Create(fileName string) error {
 }
 
 func (dfs *DistributedFileSystem) Exists(fileName string) bool {
-	client, err := rpc.DialHTTP("tcp", dfs.endpoint)
-
-	if err != nil {
-		slog.Error("dialing error", "error", err)
-		return false
-	}
-
 	var success bool
-
-	asyncRpcCall := client.Go("NameNode.Exists", fileName, &success, nil)
+	asyncRpcCall := dfs.namenodeClient.Go("NameNode.Exists", fileName, &success, nil)
 
 	select {
 	case <-asyncRpcCall.Done:
@@ -74,16 +70,8 @@ func (dfs *DistributedFileSystem) Exists(fileName string) bool {
 // Returns whether the request succeeds, which does nothing with whether the file specified
 // by `fileName` exists when this request is issued
 func (dfs *DistributedFileSystem) Delete(fileName string) bool {
-	client, err := rpc.DialHTTP("tcp", dfs.endpoint)
-
-	if err != nil {
-		slog.Error("dialing error", "error", err)
-		return false
-	}
-
 	var success bool
-
-	asyncRpcCall := client.Go("NameNode.Delete", fileName, &success, nil)
+	asyncRpcCall := dfs.namenodeClient.Go("NameNode.Delete", fileName, &success, nil)
 
 	select {
 	case <-asyncRpcCall.Done:
@@ -100,16 +88,8 @@ func (dfs *DistributedFileSystem) Delete(fileName string) bool {
 }
 
 func (dfs *DistributedFileSystem) GetAttributes(fileName string) (common.FileAttributes, bool) {
-	client, err := rpc.DialHTTP("tcp", dfs.endpoint)
-
-	if err != nil {
-		slog.Error("dialing error", "error", err)
-		return common.FileAttributes{}, false
-	}
-
 	var fileAttributes common.FileAttributes
-
-	asyncRpcCall := client.Go("NameNode.GetAttributes", fileName, &fileAttributes, nil)
+	asyncRpcCall := dfs.namenodeClient.Go("NameNode.GetAttributes", fileName, &fileAttributes, nil)
 
 	select {
 	case <-asyncRpcCall.Done:
@@ -126,10 +106,9 @@ func (dfs *DistributedFileSystem) GetAttributes(fileName string) (common.FileAtt
 }
 
 type ReadHandle struct {
-	dfs            *DistributedFileSystem
-	fileName       string
-	offset         uint
-	namenodeClient *rpc.Client
+	dfs      *DistributedFileSystem
+	fileName string
+	offset   uint
 }
 
 func (dfs *DistributedFileSystem) OpenForRead(fileName string) ReadHandle {
@@ -164,17 +143,8 @@ func (readHandle *ReadHandle) Read(length uint) ([]byte, error) {
 		EndBlock:   uint(endBlock),
 	}
 
-	if readHandle.namenodeClient == nil {
-		namenodeClient, err := rpc.DialHTTP("tcp", readHandle.dfs.endpoint)
-		if err != nil {
-			slog.Error("dialing error", "error", err)
-			return nil, err
-		}
-		readHandle.namenodeClient = namenodeClient
-	}
-
 	var getBlockLocationsResponse common.GetBlockLocationsResponse
-	asyncRpcCall := readHandle.namenodeClient.Go("NameNode.GetBlockLocations", getBlockLocationsRequest, &getBlockLocationsResponse, nil)
+	asyncRpcCall := readHandle.dfs.namenodeClient.Go("NameNode.GetBlockLocations", getBlockLocationsRequest, &getBlockLocationsResponse, nil)
 
 	select {
 	case <-asyncRpcCall.Done:
@@ -261,19 +231,11 @@ func (readHandle *ReadHandle) Read(length uint) ([]byte, error) {
 	return dataBuffer, nil
 }
 
-func (readHandle *ReadHandle) Close() {
-	if readHandle.namenodeClient != nil {
-		readHandle.namenodeClient.Close()
-	}
-}
-
 type WriteHandle struct {
-	dfs            *DistributedFileSystem
-	fileName       string
-	offset         uint
-	leaseToken     uint64
-	namenodeClient *rpc.Client
-	closed         bool
+	dfs        *DistributedFileSystem
+	fileName   string
+	offset     uint
+	leaseToken uint64
 }
 
 func (dfs *DistributedFileSystem) OpenForWrite(fileName string) WriteHandle {
@@ -292,7 +254,6 @@ func (writeHandle *WriteHandle) Write(data []byte) error {
 	offset := writeHandle.offset
 	length := uint(len(data))
 	fileName := writeHandle.fileName
-	dfs := writeHandle.dfs
 
 	if length == 0 {
 		return nil
@@ -305,15 +266,6 @@ func (writeHandle *WriteHandle) Write(data []byte) error {
 	endBlockOffset := (offset+length-1)%common.BLOCK_SIZE + 1
 
 	// Step 2: Get the block metadata from the NameNode
-	if writeHandle.namenodeClient == nil {
-		namenodeClient, err := rpc.DialHTTP("tcp", dfs.endpoint)
-		if err != nil {
-			slog.Error("dialing error", "error", err)
-			return err
-		}
-		writeHandle.namenodeClient = namenodeClient
-	}
-
 	for writeHandle.leaseToken == 0 {
 		writeHandle.leaseToken = rand.Uint64()
 	}
@@ -326,29 +278,22 @@ func (writeHandle *WriteHandle) Write(data []byte) error {
 	}
 
 	var getBlockLocationsResponse common.GetBlockLocationsResponse
-	asyncRpcCall := writeHandle.namenodeClient.Go("NameNode.GetBlockLocations", getBlockLocationsRequest, &getBlockLocationsResponse, nil)
-
-	select {
-	case <-asyncRpcCall.Done:
-		if asyncRpcCall.Error != nil {
-			slog.Error("Error during GetBlockLocations Request", "error", asyncRpcCall.Error)
-			return asyncRpcCall.Error
-		} else {
-			break
-		}
-	case <-time.After(common.RPC_TIMEOUT):
-		slog.Error("GetBlockLocations Request timeout", "DFS endpoint", writeHandle.dfs.endpoint, "file name", writeHandle.fileName)
-		return errors.New("GetBlockLocations Request timeout")
+	err := writeHandle.dfs.namenodeClient.Call("NameNode.GetBlockLocations",
+		getBlockLocationsRequest, &getBlockLocationsResponse)
+	if err != nil {
+		slog.Error("Error during GetBlockLocations Request", "error", err)
+		return err
 	}
 
 	slog.Info("GetBlockLocations succeeded", "file", fileName, "BlockInfoList", getBlockLocationsResponse.BlockInfoList)
 
+	writeDone := false
 	go func() {
 		time.Sleep(common.LEASE_RENEWAL_INTERVAL)
 
-		for !writeHandle.closed {
+		for !writeDone {
 			var unused bool
-			writeHandle.namenodeClient.Call("NameNode.RenewLease", common.LeaseRenewalRequest{
+			writeHandle.dfs.namenodeClient.Call("NameNode.RenewLease", common.LeaseRenewalRequest{
 				FileName:   writeHandle.fileName,
 				LeaseToken: writeHandle.leaseToken,
 			}, &unused)
@@ -426,18 +371,4 @@ func (writeHandle *WriteHandle) Write(data []byte) error {
 	writeHandle.offset += uint(len(data))
 
 	return nil
-}
-
-func (writeHandle *WriteHandle) Close() {
-	writeHandle.closed = true
-	if writeHandle.namenodeClient != nil && writeHandle.leaseToken != 0 {
-		var unused bool
-		writeHandle.namenodeClient.Call("NameNode.RevokeLease", common.LeaseRenewalRequest{
-			FileName:   writeHandle.fileName,
-			LeaseToken: writeHandle.leaseToken,
-		}, &unused)
-	}
-	if writeHandle.namenodeClient != nil {
-		writeHandle.namenodeClient.Close()
-	}
 }

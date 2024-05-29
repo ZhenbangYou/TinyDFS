@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/rand"
 	"net"
 	"net/http"
 	"net/rpc"
@@ -13,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/emirpasic/gods/maps/treemap"
 
 	"github.com/ZhenbangYou/TinyDFS/tiny-dfs/common"
 )
@@ -49,6 +50,10 @@ type NameNode struct {
 
 	datanodes      map[string]DataNodeInfo
 	datanodeRWLock *sync.RWMutex // The RWLock for the datanodes
+
+	datanodeLoadRank *treemap.Map   // block count (int) -> hashset of endpoints
+	datanodeLoad     map[string]int // endpoint -> #blocks it has
+	datanodeLoadLock *sync.Mutex
 }
 
 // `success` will be true iff the file doesn't exist
@@ -225,6 +230,24 @@ func (server *NameNode) ReportBlock(blockReport common.BlockReport, success *boo
 	slog.Info("ReportBlock success", "dataNodeEndpoint", blockReport.Endpoint)
 
 	*success = true
+
+	blockCount := len(blockReport.BlockMetadata)
+	server.datanodeLoadLock.Lock()
+	defer server.datanodeLoadLock.Unlock()
+
+	server.datanodeLoad[blockReport.Endpoint] = blockCount
+
+	datanodesOfSameLoad, exists := server.datanodeLoadRank.Get(blockCount)
+	if exists {
+		hashset := datanodesOfSameLoad.(map[string]bool)
+		hashset[blockReport.Endpoint] = false // value is unused
+		server.datanodeLoadRank.Put(blockCount, hashset)
+	} else {
+		server.datanodeLoadRank.Put(blockCount, map[string]bool{
+			blockReport.Endpoint: false,
+		})
+	}
+
 	return nil
 }
 
@@ -374,19 +397,18 @@ func (server *NameNode) heartbeatMonitor() {
 // Pick `num` datanodes to hold a new block
 // TODO: optimize selection for load balancing
 func (server *NameNode) pickDatanodes(num uint) []string {
-	var datanodeList []string
-	for key := range server.datanodes {
-		datanodeList = append(datanodeList, key)
-	}
-
-	indices := make(map[int]bool) // Used as a hashset
 	result := make([]string, 0, num)
-	for len(result) < int(num) {
-		r := rand.Intn(len(server.datanodes))
-		_, exists := indices[r]
-		if !exists {
-			indices[r] = false
-			result = append(result, datanodeList[r])
+
+	iter := server.datanodeLoadRank.Iterator()
+	for iter.Next() {
+		if uint(len(result)) == num {
+			break
+		}
+		for endpoint, _ := range iter.Value().(map[string]bool) {
+			result = append(result, endpoint)
+			if uint(len(result)) == num {
+				break
+			}
 		}
 	}
 
@@ -525,6 +547,33 @@ func (server *NameNode) BumpBlockVersion(args common.BlockVersionBump, unused *b
 		// New block
 		newInode.fileAttributes.Size += newEntry.Size
 		newInode.storageInfo[args.BlockIndex] = newEntry
+
+		server.datanodeLoadLock.Lock()
+		defer server.datanodeLoadLock.Unlock()
+
+		for _, endpoint := range args.ReplicaEndpoints {
+			// As long as the datanode reported its blocks before, the following two maps should contain it
+			prevBlockCount := server.datanodeLoad[endpoint]
+			prevDatanodesOfSameLoad, _ := server.datanodeLoadRank.Get(prevBlockCount)
+
+			curBlockCount := prevBlockCount + 1
+			server.datanodeLoad[endpoint] = curBlockCount
+
+			prevHashset := prevDatanodesOfSameLoad.(map[string]bool)
+			delete(prevHashset, endpoint)
+			server.datanodeLoadRank.Put(prevBlockCount, prevHashset)
+
+			curDatanodesOfSameLoad, exists := server.datanodeLoadRank.Get(curBlockCount)
+			if exists {
+				curHashset := curDatanodesOfSameLoad.(map[string]bool)
+				curHashset[endpoint] = false // value is unused
+				server.datanodeLoadRank.Put(curBlockCount, curHashset)
+			} else {
+				server.datanodeLoadRank.Put(curBlockCount, map[string]bool{
+					endpoint: false,
+				})
+			}
+		}
 	}
 	server.inodes[args.FileName] = newInode
 	return nil
@@ -607,10 +656,13 @@ func main() {
 
 	// Initialize NameNode
 	server := NameNode{
-		inodes:         make(map[string]iNode),
-		inodeRWLock:    new(sync.RWMutex),
-		datanodeRWLock: new(sync.RWMutex),
-		datanodes:      make(map[string]DataNodeInfo),
+		inodes:           make(map[string]iNode),
+		inodeRWLock:      new(sync.RWMutex),
+		datanodeRWLock:   new(sync.RWMutex),
+		datanodes:        make(map[string]DataNodeInfo),
+		datanodeLoadRank: treemap.NewWithIntComparator(),
+		datanodeLoad:     make(map[string]int),
+		datanodeLoadLock: new(sync.Mutex),
 	}
 	slog.Info("Initialized namenode", "nameNodeEndpoint", nameNodeEndpoint)
 
