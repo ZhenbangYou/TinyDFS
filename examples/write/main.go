@@ -41,8 +41,24 @@ func main() {
 	writeHandle.Seek(10)
 	err = writeHandle.Write([]byte("56789"))
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("first write error: ", err)
 	}
+	err = writeHandle.Close()
+	if err != nil {
+		log.Fatal("first close error: ", err)
+	}
+
+	writeHandle = dfs.OpenForWrite(*path)
+	err = writeHandle.Write([]byte("qwert"))
+	if err != nil {
+		log.Fatal("second write error: ", err)
+	}
+	writeHandle.Seek(10)
+	err = writeHandle.Write([]byte("asdfg"))
+	if err != nil {
+		log.Fatal("second close error: ", err)
+	}
+	writeHandle.Close()
 
 	readHandle := dfs.OpenForRead(*path)
 

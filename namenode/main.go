@@ -17,16 +17,16 @@ import (
 	"github.com/ZhenbangYou/TinyDFS/tiny-dfs/common"
 )
 
-type BlockStorageInfo struct {
+type blockStorageInfo struct {
 	LatestVersion uint     // The latest version of the block, version = 0 represents invalid
 	Size          uint     // The size of the block
 	DataNodes     []string // Endpoints of datanodes storing the block of the latest version
 }
 
 // Key: Block Index
-type FileStorageInfo map[uint]BlockStorageInfo
+type fileStorageInfo map[uint]blockStorageInfo
 
-type Lease struct {
+type internalLeaseInfo struct {
 	leaseToken           uint64
 	lastRenewalTimestamp time.Time
 }
@@ -34,11 +34,11 @@ type Lease struct {
 type iNode struct {
 	fileAttributes common.FileAttributes
 	rwlock         *sync.RWMutex // Per-file rwlock
-	storageInfo    FileStorageInfo
-	lease          Lease
+	storageInfo    fileStorageInfo
+	lease          internalLeaseInfo
 }
 
-type DataNodeInfo struct {
+type dataNodeInfo struct {
 	heartbeatReceived bool // Whether received heartbeat during the last interval
 	isAlive           bool
 }
@@ -47,7 +47,7 @@ type NameNode struct {
 	inodes      map[string]iNode
 	inodeRWLock *sync.RWMutex // The RWLock for all the inodes
 
-	datanodes      map[string]DataNodeInfo
+	datanodes      map[string]dataNodeInfo
 	datanodeRWLock *sync.RWMutex // The RWLock for the datanodes
 
 	datanodeLoadRank *treemap.Map   // block count (int) -> hashset of endpoints
@@ -73,7 +73,7 @@ func (server *NameNode) Create(path string, success *bool) error {
 		server.inodes[path] = iNode{
 			fileAttributes: metadata,
 			rwlock:         new(sync.RWMutex),
-			storageInfo:    make(FileStorageInfo),
+			storageInfo:    make(fileStorageInfo),
 		}
 		*success = true
 		return nil
@@ -115,7 +115,7 @@ func (server *NameNode) RegisterDataNode(dataNodeEndpoint string, success *bool)
 	defer server.inodeRWLock.Unlock()
 
 	// TODO: Check if the datanode is already registered
-	server.datanodes[dataNodeEndpoint] = DataNodeInfo{
+	server.datanodes[dataNodeEndpoint] = dataNodeInfo{
 		heartbeatReceived: true,
 		isAlive:           true,
 	}
@@ -161,7 +161,7 @@ func (server *NameNode) ReportBlock(blockReport common.BlockReport, success *boo
 					Size: 0,
 				},
 				rwlock:      new(sync.RWMutex),
-				storageInfo: make(FileStorageInfo),
+				storageInfo: make(fileStorageInfo),
 			}
 			server.inodes[blockMetadata.FileName] = inode
 			slog.Debug("Create new inode", "fileName", blockMetadata.FileName,
@@ -176,7 +176,7 @@ func (server *NameNode) ReportBlock(blockReport common.BlockReport, success *boo
 
 			if blockMetadata.Version > inode.storageInfo[blockMetadata.BlockIndex].LatestVersion {
 				// Find a newer version
-				inode.storageInfo[blockMetadata.BlockIndex] = BlockStorageInfo{
+				inode.storageInfo[blockMetadata.BlockIndex] = blockStorageInfo{
 					LatestVersion: blockMetadata.Version,
 					Size:          blockMetadata.Size,
 					DataNodes:     []string{blockReport.Endpoint},
@@ -202,7 +202,7 @@ func (server *NameNode) ReportBlock(blockReport common.BlockReport, success *boo
 			slog.Debug("Create new storage info",
 				"file name", blockMetadata.FileName,
 				"block index", blockMetadata.BlockIndex)
-			inode.storageInfo[blockMetadata.BlockIndex] = BlockStorageInfo{
+			inode.storageInfo[blockMetadata.BlockIndex] = blockStorageInfo{
 				LatestVersion: blockMetadata.Version,
 				Size:          blockMetadata.Size,
 				DataNodes:     []string{blockReport.Endpoint},
@@ -264,7 +264,7 @@ func (server *NameNode) Heartbeat(heartbeat common.Heartbeat, success *bool) err
 	}
 
 	// Update the status of the datanode
-	server.datanodes[heartbeat.Endpoint] = DataNodeInfo{
+	server.datanodes[heartbeat.Endpoint] = dataNodeInfo{
 		heartbeatReceived: true,
 		isAlive:           true,
 	}
@@ -281,12 +281,12 @@ func (server *NameNode) heartbeatMonitor() {
 		for endpoint, dataNode := range server.datanodes {
 			if !dataNode.heartbeatReceived {
 				// The datanode hasn't sent a heartbeat
-				server.datanodes[endpoint] = DataNodeInfo{
+				server.datanodes[endpoint] = dataNodeInfo{
 					heartbeatReceived: false,
 					isAlive:           false,
 				}
 			} else {
-				server.datanodes[endpoint] = DataNodeInfo{
+				server.datanodes[endpoint] = dataNodeInfo{
 					heartbeatReceived: false,
 					isAlive:           true,
 				}
@@ -348,7 +348,10 @@ func (server *NameNode) GetBlockLocations(args *common.GetBlockLocationsRequest,
 
 			server.inodes[args.FileName] = inode
 		} else {
-			fmt.Println(inode.lease.leaseToken, args.LeaseToken)
+			slog.Error("Lease mismatch",
+				"file name", args.FileName,
+				"actual lease token", inode.lease.leaseToken,
+				"got", args.LeaseToken)
 			return errors.New("lease is owned by other client")
 		}
 	}
@@ -435,7 +438,7 @@ func (server *NameNode) BumpBlockVersion(args common.BlockVersionBump, unused *b
 	}
 
 	newInode := oldInode
-	newEntry := BlockStorageInfo{
+	newEntry := blockStorageInfo{
 		LatestVersion: args.Version,
 		Size:          args.Size,
 		DataNodes:     args.ReplicaEndpoints,
@@ -483,7 +486,7 @@ func (server *NameNode) BumpBlockVersion(args common.BlockVersionBump, unused *b
 	return nil
 }
 
-func (server *NameNode) RenewLease(args common.LeaseRenewalRequest, unused *bool) error {
+func (server *NameNode) RenewLease(args common.Lease, unused *bool) error {
 	// Ensure file exists
 	server.inodeRWLock.RLock()
 	inode, ok := server.inodes[args.FileName]
@@ -497,13 +500,13 @@ func (server *NameNode) RenewLease(args common.LeaseRenewalRequest, unused *bool
 	defer inode.rwlock.RUnlock()
 
 	if args.LeaseToken != inode.lease.leaseToken {
-		return errors.New("Lease doesn't match")
+		return errors.New("lease doesn't match")
 	}
 	inode.lease.lastRenewalTimestamp = time.Now()
 	return nil
 }
 
-func (server *NameNode) RevokeLease(args common.LeaseRenewalRequest, unused *bool) error {
+func (server *NameNode) RevokeLease(args common.Lease, unused *bool) error {
 	// Ensure file exists
 	server.inodeRWLock.RLock()
 	inode, ok := server.inodes[args.FileName]
@@ -517,9 +520,12 @@ func (server *NameNode) RevokeLease(args common.LeaseRenewalRequest, unused *boo
 	defer inode.rwlock.RUnlock()
 
 	if args.LeaseToken != inode.lease.leaseToken {
-		return errors.New("Lease doesn't match")
+		return errors.New("lease doesn't match")
 	}
 	inode.lease.leaseToken = 0
+	server.inodes[args.FileName] = inode
+
+	slog.Info("Lease revoked", "file name", args.FileName)
 	return nil
 }
 
@@ -563,7 +569,7 @@ func main() {
 		inodes:           make(map[string]iNode),
 		inodeRWLock:      new(sync.RWMutex),
 		datanodeRWLock:   new(sync.RWMutex),
-		datanodes:        make(map[string]DataNodeInfo),
+		datanodes:        make(map[string]dataNodeInfo),
 		datanodeLoadRank: treemap.NewWithIntComparator(),
 		datanodeLoad:     make(map[string]int),
 		datanodeLoadLock: new(sync.Mutex),

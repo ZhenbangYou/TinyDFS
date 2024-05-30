@@ -2,6 +2,7 @@ package client
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"math/rand"
 	"net/rpc"
@@ -284,7 +285,7 @@ func (writeHandle *WriteHandle) Write(data []byte) error {
 
 		for !writeDone {
 			var unused bool
-			writeHandle.dfs.namenodeClient.Call("NameNode.RenewLease", common.LeaseRenewalRequest{
+			writeHandle.dfs.namenodeClient.Call("NameNode.RenewLease", common.Lease{
 				FileName:   writeHandle.fileName,
 				LeaseToken: writeHandle.leaseToken,
 			}, &unused)
@@ -361,5 +362,29 @@ func (writeHandle *WriteHandle) Write(data []byte) error {
 
 	writeHandle.offset += uint(len(data))
 
+	return nil
+}
+
+func (writeHandle *WriteHandle) Close() error {
+	if writeHandle.leaseToken != 0 {
+		fmt.Println("touch")
+		var unused bool
+		asyncRpcCall := writeHandle.dfs.namenodeClient.Go("NameNode.RevokeLease", common.Lease{
+			FileName:   writeHandle.fileName,
+			LeaseToken: writeHandle.leaseToken,
+		}, &unused, nil)
+		select {
+		case <-asyncRpcCall.Done:
+			if asyncRpcCall.Error != nil {
+				slog.Error("RevokeLease RPC error", "error", asyncRpcCall.Error)
+				return asyncRpcCall.Error
+			} else {
+				slog.Debug("RevokeLease succeeded", "file name", writeHandle.fileName)
+			}
+		case <-time.After(common.RPC_TIMEOUT):
+			slog.Error("RevokeLease RPC timeout")
+			return errors.New("RevokeLease RPC timeout")
+		}
+	}
 	return nil
 }
