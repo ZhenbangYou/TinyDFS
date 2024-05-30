@@ -306,7 +306,7 @@ func (server *NameNode) pickDatanodes(num uint) []string {
 		if uint(len(result)) == num {
 			break
 		}
-		for endpoint, _ := range iter.Value().(map[string]bool) {
+		for endpoint := range iter.Value().(map[string]bool) {
 			result = append(result, endpoint)
 			if uint(len(result)) == num {
 				break
