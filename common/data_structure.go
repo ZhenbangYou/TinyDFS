@@ -74,7 +74,7 @@ type BlockVersionBump struct {
 	LeaseToken       uint64
 }
 
-type LeaseRenewalRequest struct {
+type Lease struct {
 	FileName   string
 	LeaseToken uint64
 }

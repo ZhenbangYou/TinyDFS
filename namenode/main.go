@@ -26,7 +26,7 @@ type BlockStorageInfo struct {
 // Key: Block Index
 type FileStorageInfo map[uint]BlockStorageInfo
 
-type Lease struct {
+type internalLeaseInfo struct {
 	leaseToken           uint64
 	lastRenewalTimestamp time.Time
 }
@@ -35,7 +35,7 @@ type iNode struct {
 	fileAttributes common.FileAttributes
 	rwlock         *sync.RWMutex // Per-file rwlock
 	storageInfo    FileStorageInfo
-	lease          Lease
+	lease          internalLeaseInfo
 }
 
 type DataNodeInfo struct {
@@ -348,7 +348,10 @@ func (server *NameNode) GetBlockLocations(args *common.GetBlockLocationsRequest,
 
 			server.inodes[args.FileName] = inode
 		} else {
-			fmt.Println(inode.lease.leaseToken, args.LeaseToken)
+			slog.Error("Lease mismatch",
+				"file name", args.FileName,
+				"actual lease token", inode.lease.leaseToken,
+				"got", args.LeaseToken)
 			return errors.New("lease is owned by other client")
 		}
 	}
@@ -483,7 +486,7 @@ func (server *NameNode) BumpBlockVersion(args common.BlockVersionBump, unused *b
 	return nil
 }
 
-func (server *NameNode) RenewLease(args common.LeaseRenewalRequest, unused *bool) error {
+func (server *NameNode) RenewLease(args common.Lease, unused *bool) error {
 	// Ensure file exists
 	server.inodeRWLock.RLock()
 	inode, ok := server.inodes[args.FileName]
@@ -497,13 +500,13 @@ func (server *NameNode) RenewLease(args common.LeaseRenewalRequest, unused *bool
 	defer inode.rwlock.RUnlock()
 
 	if args.LeaseToken != inode.lease.leaseToken {
-		return errors.New("Lease doesn't match")
+		return errors.New("lease doesn't match")
 	}
 	inode.lease.lastRenewalTimestamp = time.Now()
 	return nil
 }
 
-func (server *NameNode) RevokeLease(args common.LeaseRenewalRequest, unused *bool) error {
+func (server *NameNode) RevokeLease(args common.Lease, unused *bool) error {
 	// Ensure file exists
 	server.inodeRWLock.RLock()
 	inode, ok := server.inodes[args.FileName]
@@ -517,9 +520,12 @@ func (server *NameNode) RevokeLease(args common.LeaseRenewalRequest, unused *boo
 	defer inode.rwlock.RUnlock()
 
 	if args.LeaseToken != inode.lease.leaseToken {
-		return errors.New("Lease doesn't match")
+		return errors.New("lease doesn't match")
 	}
 	inode.lease.leaseToken = 0
+	server.inodes[args.FileName] = inode
+
+	slog.Info("Lease revoked", "file name", args.FileName)
 	return nil
 }
 
