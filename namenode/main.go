@@ -23,9 +23,6 @@ type blockStorageInfo struct {
 	DataNodes     []string // Endpoints of datanodes storing the block of the latest version
 }
 
-// Key: Block Index
-type fileStorageInfo map[uint]blockStorageInfo
-
 type internalLeaseInfo struct {
 	leaseToken           uint64
 	lastRenewalTimestamp time.Time
@@ -34,7 +31,7 @@ type internalLeaseInfo struct {
 type iNode struct {
 	fileAttributes common.FileAttributes
 	rwlock         *sync.RWMutex // Per-file rwlock
-	storageInfo    fileStorageInfo
+	storageInfo    []blockStorageInfo
 	lease          internalLeaseInfo
 }
 
@@ -73,7 +70,7 @@ func (server *NameNode) Create(path string, success *bool) error {
 		server.inodes[path] = iNode{
 			fileAttributes: metadata,
 			rwlock:         new(sync.RWMutex),
-			storageInfo:    make(fileStorageInfo),
+			storageInfo:    nil,
 		}
 		*success = true
 		return nil
@@ -161,7 +158,7 @@ func (server *NameNode) ReportBlock(blockReport common.BlockReport, success *boo
 					Size: 0,
 				},
 				rwlock:      new(sync.RWMutex),
-				storageInfo: make(fileStorageInfo),
+				storageInfo: nil,
 			}
 			server.inodes[blockMetadata.FileName] = inode
 			slog.Debug("Create new inode", "fileName", blockMetadata.FileName,
@@ -171,9 +168,10 @@ func (server *NameNode) ReportBlock(blockReport common.BlockReport, success *boo
 		inode.rwlock.Lock()
 
 		// Update the storage info
-		if storageInfo, ok := inode.storageInfo[blockMetadata.BlockIndex]; ok {
+		if blockMetadata.BlockIndex < uint(len(inode.storageInfo)) {
 			// Block info exists in namenode
 
+			storageInfo := inode.storageInfo[blockMetadata.BlockIndex]
 			if blockMetadata.Version > inode.storageInfo[blockMetadata.BlockIndex].LatestVersion {
 				// Find a newer version
 				inode.storageInfo[blockMetadata.BlockIndex] = blockStorageInfo{
@@ -202,6 +200,9 @@ func (server *NameNode) ReportBlock(blockReport common.BlockReport, success *boo
 			slog.Debug("Create new storage info",
 				"file name", blockMetadata.FileName,
 				"block index", blockMetadata.BlockIndex)
+			for !(blockMetadata.BlockIndex < uint(len(inode.storageInfo))) {
+				inode.storageInfo = append(inode.storageInfo, blockStorageInfo{})
+			}
 			inode.storageInfo[blockMetadata.BlockIndex] = blockStorageInfo{
 				LatestVersion: blockMetadata.Version,
 				Size:          blockMetadata.Size,
@@ -356,8 +357,7 @@ func (server *NameNode) GetBlockLocations(args *common.GetBlockLocationsRequest,
 
 	var blockInfoList []common.BlockInfo
 	for i := args.BeginBlock; i < args.EndBlock; i++ {
-		storageInfo, exist := inode.storageInfo[i]
-		if !exist {
+		if !(i < uint(len(inode.storageInfo))) {
 			blockInfoList = append(blockInfoList, common.BlockInfo{
 				Version:           common.MIN_VALID_VERSION_NUMBER - 1,
 				DataNodeEndpoints: server.pickDatanodes(common.BLOCK_REPLICATION),
@@ -367,7 +367,7 @@ func (server *NameNode) GetBlockLocations(args *common.GetBlockLocationsRequest,
 			var hasDeadNode bool = false
 			var aliveStorageNodes []string
 			server.datanodeRWLock.RLock()
-			for _, storageNode := range storageInfo.DataNodes {
+			for _, storageNode := range inode.storageInfo[i].DataNodes {
 				if server.datanodes[storageNode].isAlive {
 					aliveStorageNodes = append(aliveStorageNodes, storageNode)
 				} else {
@@ -380,8 +380,7 @@ func (server *NameNode) GetBlockLocations(args *common.GetBlockLocationsRequest,
 			if hasDeadNode {
 				inode.rwlock.RUnlock()
 				inode.rwlock.Lock()
-				storageInfo.DataNodes = aliveStorageNodes
-				inode.storageInfo[i] = storageInfo
+				inode.storageInfo[i].DataNodes = aliveStorageNodes
 				inode.rwlock.Unlock()
 				inode.rwlock.RLock()
 			}
@@ -431,8 +430,9 @@ func (server *NameNode) BumpBlockVersion(args common.BlockVersionBump, unused *b
 		Size:          args.Size,
 		DataNodes:     args.ReplicaEndpoints,
 	}
-	if oldEntry, ok := oldInode.storageInfo[args.BlockIndex]; ok {
+	if args.BlockIndex < uint(len(oldInode.storageInfo)) {
 		// Block exists
+		oldEntry := oldInode.storageInfo[args.BlockIndex]
 		if oldEntry.LatestVersion < args.Version {
 			newInode.fileAttributes.Size -= oldEntry.Size
 			newInode.fileAttributes.Size += newEntry.Size
@@ -440,6 +440,10 @@ func (server *NameNode) BumpBlockVersion(args common.BlockVersionBump, unused *b
 		}
 	} else {
 		// New block
+		for !(args.BlockIndex < uint(len(newInode.storageInfo))) {
+			newInode.storageInfo = append(newInode.storageInfo, blockStorageInfo{})
+		}
+
 		newInode.fileAttributes.Size += newEntry.Size
 		newInode.storageInfo[args.BlockIndex] = newEntry
 
