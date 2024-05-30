@@ -262,7 +262,9 @@ func (server *NameNode) replicationMonitor() {
 		for fileName, inode := range server.inodes {
 			inode.rwlock.RLock()
 			for blockIndex, storageInfo := range inode.storageInfo {
-				if len(storageInfo.DataNodes) < common.BLOCK_REPLICATION && storageInfo.LatestVersion > 0 {
+				if len(storageInfo.DataNodes) < common.BLOCK_REPLICATION && 
+					storageInfo.LatestVersion >= common.MIN_VALID_VERSION_NUMBER {
+						
 					// Under-replicated block
 					slog.Info("Under-replicated block", "fileName", inode.fileAttributes, "blockIndex", blockIndex)
 
