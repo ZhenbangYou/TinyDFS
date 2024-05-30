@@ -334,8 +334,6 @@ func (server *NameNode) GetBlockLocations(args *common.GetBlockLocationsRequest,
 		return errors.New("file not found")
 	}
 
-	dataNodesStatus := server.getDataNodeLiveness()
-
 	inode.rwlock.RLock()
 	defer inode.rwlock.RUnlock()
 
@@ -365,17 +363,19 @@ func (server *NameNode) GetBlockLocations(args *common.GetBlockLocationsRequest,
 				DataNodeEndpoints: server.pickDatanodes(common.BLOCK_REPLICATION),
 			})
 		} else {
-			storageNodes := storageInfo.DataNodes
 			// Filter out the alive storage nodes
 			var hasDeadNode bool = false
 			var aliveStorageNodes []string
-			for _, storageNode := range storageNodes {
-				if dataNodesStatus[storageNode] {
+			server.datanodeRWLock.RLock()
+			for _, storageNode := range storageInfo.DataNodes {
+				if server.datanodes[storageNode].isAlive {
 					aliveStorageNodes = append(aliveStorageNodes, storageNode)
 				} else {
 					hasDeadNode = true
 				}
 			}
+			server.datanodeRWLock.RUnlock()
+
 			// Update the storage info if needed
 			if hasDeadNode {
 				inode.rwlock.RUnlock()
@@ -405,18 +405,6 @@ func (server *NameNode) GetBlockLocations(args *common.GetBlockLocationsRequest,
 	slog.Debug("GetBlockLocations success", "file", args.FileName, "blockInfoList", blockInfoList)
 
 	return nil
-}
-
-// Returns the liveness status of all datanodes
-func (server *NameNode) getDataNodeLiveness() map[string]bool {
-	server.datanodeRWLock.RLock()
-	defer server.datanodeRWLock.RUnlock()
-
-	status := make(map[string]bool)
-	for endpoint, dataNode := range server.datanodes {
-		status[endpoint] = dataNode.isAlive
-	}
-	return status
 }
 
 func (server *NameNode) BumpBlockVersion(args common.BlockVersionBump, unused *bool) error {
