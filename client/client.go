@@ -335,7 +335,7 @@ func (writeHandle *WriteHandle) Write(data []byte) error {
 
 			writeBlockTimeout :=
 				time.Millisecond*(common.BLOCK_SIZE*1024/common.NETWORK_BANDWIDTH)*3 +
-					common.RPC_TIMEOUT
+					common.RPC_TIMEOUT*(common.BLOCK_REPLICATION+1)
 
 			select {
 			case <-asyncRpcCall.Done:
