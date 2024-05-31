@@ -201,7 +201,9 @@ func (server *NameNode) ReportBlock(blockReport common.BlockReport, success *boo
 				"file name", blockMetadata.FileName,
 				"block index", blockMetadata.BlockIndex)
 			for !(blockMetadata.BlockIndex < uint(len(inode.storageInfo))) {
-				inode.storageInfo = append(inode.storageInfo, blockStorageInfo{})
+				inode.storageInfo = append(inode.storageInfo, blockStorageInfo{
+					LatestVersion: common.MIN_VALID_VERSION_NUMBER - 1,
+				})
 			}
 			inode.storageInfo[blockMetadata.BlockIndex] = blockStorageInfo{
 				LatestVersion: blockMetadata.Version,
@@ -441,7 +443,9 @@ func (server *NameNode) BumpBlockVersion(args common.BlockVersionBump, unused *b
 	} else {
 		// New block
 		for !(args.BlockIndex < uint(len(newInode.storageInfo))) {
-			newInode.storageInfo = append(newInode.storageInfo, blockStorageInfo{})
+			newInode.storageInfo = append(newInode.storageInfo, blockStorageInfo{
+				LatestVersion: common.MIN_VALID_VERSION_NUMBER - 1,
+			})
 		}
 
 		newInode.fileAttributes.Size += newEntry.Size
