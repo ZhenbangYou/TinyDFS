@@ -2,7 +2,6 @@ package client
 
 import (
 	"errors"
-	"fmt"
 	"log/slog"
 	"math/rand"
 	"net/rpc"
@@ -228,6 +227,7 @@ type WriteHandle struct {
 	fileName   string
 	offset     uint
 	leaseToken uint64
+	closed     bool
 }
 
 func (dfs *DistributedFileSystem) OpenForWrite(fileName string) WriteHandle {
@@ -235,6 +235,7 @@ func (dfs *DistributedFileSystem) OpenForWrite(fileName string) WriteHandle {
 		dfs:      dfs,
 		fileName: fileName,
 		offset:   0,
+		closed:   false,
 	}
 }
 
@@ -279,11 +280,10 @@ func (writeHandle *WriteHandle) Write(data []byte) error {
 
 	slog.Info("GetBlockLocations succeeded", "file", fileName, "BlockInfoList", getBlockLocationsResponse.BlockInfoList)
 
-	writeDone := false
 	go func() {
 		time.Sleep(common.LEASE_RENEWAL_INTERVAL)
 
-		for !writeDone {
+		for !writeHandle.closed {
 			var unused bool
 			writeHandle.dfs.namenodeClient.Call("NameNode.RenewLease", common.Lease{
 				FileName:   writeHandle.fileName,
@@ -367,7 +367,7 @@ func (writeHandle *WriteHandle) Write(data []byte) error {
 
 func (writeHandle *WriteHandle) Close() error {
 	if writeHandle.leaseToken != 0 {
-		fmt.Println("touch")
+		writeHandle.closed = true
 		var unused bool
 		asyncRpcCall := writeHandle.dfs.namenodeClient.Go("NameNode.RevokeLease", common.Lease{
 			FileName:   writeHandle.fileName,
