@@ -230,9 +230,10 @@ func (datanode *DataNode) WriteBlock(args *common.WriteBlockRequest, unused *boo
 	slog.Info("WriteBlock request", "block info", args)
 
 	curPath := constructBlockName(args.FileName, args.BlockIndex, args.Version)
+	tmpPath := curPath + ".tmp"
 	prevPath := constructBlockName(args.FileName, args.BlockIndex, args.Version-1)
 
-	curFile, err := os.Create(curPath)
+	curFile, err := os.Create(tmpPath)
 	if err != nil {
 		slog.Error("error creating file", "error", err)
 		return err
@@ -242,7 +243,7 @@ func (datanode *DataNode) WriteBlock(args *common.WriteBlockRequest, unused *boo
 	_, err = curFile.WriteAt(args.Data, int64(args.BeginOffset))
 	if err != nil {
 		slog.Error("Write block error", "error", err)
-		os.Remove(curPath)
+		os.Remove(tmpPath)
 		return err
 	}
 
@@ -257,7 +258,7 @@ func (datanode *DataNode) WriteBlock(args *common.WriteBlockRequest, unused *boo
 		if err != nil {
 			prevFile.Close()
 			curFile.Close()
-			os.Remove(curPath)
+			os.Remove(tmpPath)
 			return err
 		}
 
@@ -267,14 +268,14 @@ func (datanode *DataNode) WriteBlock(args *common.WriteBlockRequest, unused *boo
 			if err != nil {
 				prevFile.Close()
 				curFile.Close()
-				os.Remove(curPath)
+				os.Remove(tmpPath)
 				return err
 			}
 			_, err = curFile.WriteAt(buffer, 0)
 			if err != nil {
 				prevFile.Close()
 				curFile.Close()
-				os.Remove(curPath)
+				os.Remove(tmpPath)
 				return err
 			}
 		}
@@ -283,7 +284,7 @@ func (datanode *DataNode) WriteBlock(args *common.WriteBlockRequest, unused *boo
 		if err != nil {
 			prevFile.Close()
 			curFile.Close()
-			os.Remove(curPath)
+			os.Remove(tmpPath)
 			return err
 		}
 		prevSize := prevStat.Size()
@@ -297,20 +298,21 @@ func (datanode *DataNode) WriteBlock(args *common.WriteBlockRequest, unused *boo
 			if err != nil {
 				prevFile.Close()
 				curFile.Close()
-				os.Remove(curPath)
+				os.Remove(tmpPath)
 				return err
 			}
 			_, err = curFile.WriteAt(buffer, int64(CurEndOffset))
 			if err != nil {
 				prevFile.Close()
 				curFile.Close()
-				os.Remove(curPath)
+				os.Remove(tmpPath)
 				return err
 			}
 		}
 		prevFile.Close()
 	}
 	curFile.Close()
+	os.Rename(tmpPath, curPath)
 
 	if args.IndexInChain+1 == uint(len(args.ReplicaEndpoints)) {
 		// Last one in chain, report to namenode
