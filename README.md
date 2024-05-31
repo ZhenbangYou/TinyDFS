@@ -5,7 +5,7 @@ This is a tiny distributed file system optimized for bandwidth
 
 ### NameNode Endpoint
 Exactly one line.
-It can be `IP:port` (e.g., `162.105.131.160:443`) or `DomainName:port`(e.g., `:www.stanford.edu:443`).
+It can be `IP:port` (e.g., `162.105.131.160:443`) or `DomainName:port`(e.g., `www.stanford.edu:443`).
 
 ### DataNode Endpoints
 One line per DataNode, using the same format as above.
