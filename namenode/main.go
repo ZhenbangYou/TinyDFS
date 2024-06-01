@@ -59,6 +59,9 @@ type NameNode struct {
 	// structure of the Redis DB:
 	// One Redis set: filenames -- the set of all file names
 	// For each filename, one Redis hash: block index -> version
+
+	numDataNodes         uint
+	blockReportsReceived map[string]bool // hashset of block reports received during initialization
 }
 
 const FILE_NAME_SET_KEY = "fileNames"
@@ -120,6 +123,10 @@ func (server *NameNode) Delete(path string, unused *bool) error {
 }
 
 func (server *NameNode) GetSize(path string, size *uint) error {
+	if len(server.blockReportsReceived)-1+common.BLOCK_REPLICATION < int(server.numDataNodes) {
+		return errors.New("namenode waiting for more block report for initialization")
+	}
+
 	slog.Info("GetSize request", "path", path)
 	server.inodeRWLock.RLock()
 	inode, ok := server.inodes[path]
@@ -160,6 +167,8 @@ func (server *NameNode) RegisterDataNode(dataNodeEndpoint string, success *bool)
 func (server *NameNode) ReportBlock(blockReport common.BlockReport, success *bool) error {
 	slog.Info("ReportBlock request", "dataNodeEndpoint", blockReport.Endpoint,
 		slog.Any("Block MetaData", blockReport.BlockMetadata))
+
+	server.blockReportsReceived[blockReport.Endpoint] = false
 
 	server.inodeRWLock.Lock()
 	defer server.inodeRWLock.Unlock()
@@ -309,6 +318,10 @@ func (server *NameNode) pickDatanodes(num uint) []string {
 // `common.MIN_VALID_VERSION_NUMBER - 1`
 // TODO: only return DataNode Endpoint ?
 func (server *NameNode) GetBlockLocations(args *common.GetBlockLocationsRequest, reply *common.GetBlockLocationsResponse) error {
+	if len(server.blockReportsReceived)-1+common.BLOCK_REPLICATION < int(server.numDataNodes) {
+		return errors.New("namenode waiting for more block report for initialization")
+	}
+
 	slog.Info("GetBlockLocations", "file", args.FileName)
 
 	server.inodeRWLock.RLock()
@@ -525,11 +538,12 @@ func (server *NameNode) RevokeLease(args common.Lease, unused *bool) error {
 
 // Command Line Args:
 // Args[1]: Namenode endpoint (IP:port)
-// Args[2]: Optional log file path
+// Args[2]: Number of DataNodes
+// Args[3]: Optional log file path
 func main() {
 	// Check command line arguments
-	if len(os.Args) < 2 || len(os.Args) > 3 {
-		panic(fmt.Sprintln("expect 2 or 3 command line arguments, actual argument count", len(os.Args)))
+	if len(os.Args) < 3 || len(os.Args) > 4 {
+		panic(fmt.Sprintln("expect 3 or 4 command line arguments, actual argument count", len(os.Args)))
 	}
 
 	// Read and validate Namenode endpoint
@@ -542,7 +556,7 @@ func main() {
 	var logHandler slog.Handler
 	var programLevel = new(slog.LevelVar) // Info by default
 
-	if len(os.Args) == 3 {
+	if len(os.Args) == 4 {
 		logFilePath := os.Args[2]
 		// Set file permissions to allow Read and Write for the owner
 		logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
@@ -560,14 +574,16 @@ func main() {
 
 	// Initialize NameNode
 	server := NameNode{
-		inodes:           make(map[string]iNode),
-		inodeRWLock:      new(sync.RWMutex),
-		datanodeRWLock:   new(sync.RWMutex),
-		datanodes:        make(map[string]dataNodeInfo),
-		datanodeLoadRank: treemap.NewWithIntComparator(),
-		datanodeLoad:     make(map[string]int),
-		datanodeLoadLock: new(sync.Mutex),
-		rdb:              redis.NewClient(&redis.Options{}),
+		inodes:               make(map[string]iNode),
+		inodeRWLock:          new(sync.RWMutex),
+		datanodeRWLock:       new(sync.RWMutex),
+		datanodes:            make(map[string]dataNodeInfo),
+		datanodeLoadRank:     treemap.NewWithIntComparator(),
+		datanodeLoad:         make(map[string]int),
+		datanodeLoadLock:     new(sync.Mutex),
+		rdb:                  redis.NewClient(&redis.Options{}),
+		numDataNodes:         0,
+		blockReportsReceived: make(map[string]bool),
 	}
 	slog.Info("Initialized namenode", "nameNodeEndpoint", nameNodeEndpoint)
 
@@ -616,6 +632,12 @@ func main() {
 			server.inodes[fileName] = inode
 		}
 	}
+
+	numDataNodes, err := strconv.ParseUint(os.Args[2], 10, 64)
+	if err != nil {
+		panic("Number of DataNodes argument can't be recognized")
+	}
+	server.numDataNodes = uint(numDataNodes)
 
 	// Set up namenode RPC server
 	port := strings.Split(nameNodeEndpoint, ":")[1]

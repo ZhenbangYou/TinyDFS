@@ -28,7 +28,8 @@ python ./scripts/write_test_file.py --file_path test_dir/test2
 
 # Start Namenode
 NAMENODE_ENDPOINT=$(cat "$NAMENODE_CONFIG")
-./namenode/namenode "$NAMENODE_ENDPOINT" "./$LOG_DIR/namenode.log" &
+NUM_DATANODES=$(wc -l < "$DATANODE_CONFIG")
+./namenode/namenode "$NAMENODE_ENDPOINT" $NUM_DATANODES "./$LOG_DIR/namenode.log" &
 
 # Sleep for 1 second to allow Namenode to start
 # sleep 1
