@@ -14,8 +14,11 @@ func main() {
 	}
 	defer dfs.Close()
 	path := "/path/to/file"
-	success := dfs.Create(path)
-	fmt.Println("create", success)
+	err = dfs.Create(path)
+	if err != nil {
+		log.Fatal("Create fail", err)
+	}
+	fmt.Println("create succeeded")
 
 	exists := dfs.Exists(path)
 	fmt.Println("exists after create", exists)

@@ -188,7 +188,7 @@ func parseBlockName(blockName string) (string, uint, uint, error) {
 	return fileName, uint(blockID), uint(versionID), nil
 }
 
-func (datanode *DataNode) ReadBlock(args *common.ReadBlockRequest, response *common.ReadBlockResponse) error {
+func (datanode *DataNode) ReadBlock(args common.ReadBlockRequest, response *common.ReadBlockResponse) error {
 	slog.Info("ReadBlock request", "file name", args.FileName, "block index", args.BlockIndex)
 
 	// TODO: check if lock is needed here
@@ -226,7 +226,7 @@ func (datanode *DataNode) ReadBlock(args *common.ReadBlockRequest, response *com
 // If this RPC returns nil (i.e., no error, meaning success), the block must have been persistently
 // written to the distributed file system. However, even if this RPC returns an error, the write
 // may still be successful, e.g., the error may be due to the lost of the reply from datanode to client
-func (datanode *DataNode) WriteBlock(args *common.WriteBlockRequest, unused *bool) error {
+func (datanode *DataNode) WriteBlock(args common.WriteBlockRequest, unused *bool) error {
 	slog.Info("WriteBlock request", "block info", args)
 
 	curPath := constructBlockName(args.FileName, args.BlockIndex, args.Version)
@@ -385,6 +385,13 @@ func (datanode *DataNode) WriteBlock(args *common.WriteBlockRequest, unused *boo
 			return nil
 		}
 	}
+}
+
+func (datanode *DataNode) DeleteBlock(args common.DeleteBlockRequest, unused *bool) error {
+	slog.Info("Delete Block request", "block", args)
+	path := constructBlockName(args.FileName, args.BlockIndex, args.Version)
+	err := os.Remove(path)
+	return err
 }
 
 // Command Line Args:

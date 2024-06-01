@@ -67,22 +67,22 @@ type NameNode struct {
 const FILE_NAME_SET_KEY = "fileNames"
 
 // `success` will be true iff the file doesn't exist
-func (server *NameNode) Create(path string, success *bool) error {
-	slog.Info("Create request", "path", path)
+func (server *NameNode) Create(fileName string, success *bool) error {
+	slog.Info("Create request", "path", fileName)
 
 	server.inodeRWLock.Lock()
 	defer server.inodeRWLock.Unlock()
 
-	_, exist := server.inodes[path]
+	_, exist := server.inodes[fileName]
 	if exist {
 		*success = false
 		return errors.New("file exists")
 	} else {
-		server.inodes[path] = iNode{
+		server.inodes[fileName] = iNode{
 			rwlock:      new(sync.RWMutex),
 			storageInfo: nil,
 		}
-		err := server.rdb.SAdd(ctx, FILE_NAME_SET_KEY, path).Err()
+		err := server.rdb.SAdd(ctx, FILE_NAME_SET_KEY, fileName).Err()
 		if err != nil {
 			slog.Error("Redis SADD", "error", err)
 			return err
@@ -92,44 +92,70 @@ func (server *NameNode) Create(path string, success *bool) error {
 	}
 }
 
-func (server *NameNode) Exists(path string, exists *bool) error {
-	slog.Info("Exists request", "path", path)
+func (server *NameNode) Exists(fileName string, exists *bool) error {
+	slog.Info("Exists request", "path", fileName)
 	server.inodeRWLock.RLock()
 	defer server.inodeRWLock.RUnlock()
-	_, *exists = server.inodes[path]
+	_, *exists = server.inodes[fileName]
 	return nil
 }
 
 // TODO: notify all the datanodes to delete the blocks
 // This RPC doesn't return anything
-func (server *NameNode) Delete(path string, unused *bool) error {
-	slog.Info("Delete request", "path", path)
+func (server *NameNode) Delete(fileName string, unused *bool) error {
+	slog.Info("Delete request", "path", fileName)
 
 	server.inodeRWLock.Lock()
+	inode, exists := server.inodes[fileName]
+	delete(server.inodes, fileName)
 	defer server.inodeRWLock.Unlock()
 
-	delete(server.inodes, path)
-	err := server.rdb.SRem(ctx, FILE_NAME_SET_KEY, path).Err()
-	if err != nil {
-		slog.Error("Redis SREM", "error", err)
-		return err
+	if exists {
+		err := server.rdb.SRem(ctx, FILE_NAME_SET_KEY, fileName).Err()
+		if err != nil {
+			slog.Error("Redis SREM", "error", err)
+			return err
+		}
+		err = server.rdb.Del(ctx, fileName).Err()
+		if err != nil {
+			slog.Error("Redis DEL", "error", err)
+			return err
+		}
+
+		for blockIndex, blockInfo := range inode.storageInfo {
+			for _, endpoint := range blockInfo.DataNodes {
+				datanodeConn, err := rpc.DialHTTP("tcp", endpoint)
+				if err != nil {
+					slog.Error("error dialing datanode", "endpoint", datanodeConn)
+					// Even if it fails, don't let client know since the future block report
+					// from the same datanode will resolve this
+					continue
+				}
+
+				// No need to wait, just let them run
+				go func(fileName string, blockIndex uint, version uint) {
+					var unused bool
+					datanodeConn.Call("DataNode.DeleteBlock", common.DeleteBlockRequest{
+						FileName:   fileName,
+						BlockIndex: blockIndex,
+						Version:    version,
+					}, &unused)
+				}(fileName, uint(blockIndex), blockInfo.LatestVersion)
+			}
+		}
 	}
-	err = server.rdb.Del(ctx, path).Err()
-	if err != nil {
-		slog.Error("Redis DEL", "error", err)
-		return err
-	}
+
 	return nil
 }
 
-func (server *NameNode) GetSize(path string, size *uint) error {
+func (server *NameNode) GetSize(fileName string, size *uint) error {
 	if len(server.blockReportsReceived)-1+common.BLOCK_REPLICATION < int(server.numDataNodes) {
 		return errors.New("namenode waiting for more block report for initialization")
 	}
 
-	slog.Info("GetSize request", "path", path)
+	slog.Info("GetSize request", "path", fileName)
 	server.inodeRWLock.RLock()
-	inode, ok := server.inodes[path]
+	inode, ok := server.inodes[fileName]
 	server.inodeRWLock.RUnlock()
 
 	if !ok {

@@ -61,6 +61,12 @@ type WriteBlockRequest struct {
 	LeaseToken uint64
 }
 
+type DeleteBlockRequest struct {
+	FileName   string
+	BlockIndex uint
+	Version    uint
+}
+
 type BlockVersionBump struct {
 	FileName         string
 	BlockIndex       uint
