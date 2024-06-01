@@ -11,9 +11,13 @@ type BlockMetadata struct {
 	Size    uint
 }
 
-type BlockReport struct {
+type BlockReportRequest struct {
 	Endpoint      string
 	BlockMetadata []BlockMetadata
+}
+
+type BlockReportResponse struct {
+	BlockIDs []BlockIdentifier
 }
 
 type Heartbeat struct {

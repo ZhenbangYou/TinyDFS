@@ -28,7 +28,7 @@ type DataNode struct {
 
 // Go over all the files in the subdir,
 // Create locks and generate a block report for the namenode
-func (datanode *DataNode) generateBlockReport() common.BlockReport {
+func (datanode *DataNode) generateBlockReport() common.BlockReportRequest {
 	var blockMetadata []common.BlockMetadata
 	datanode.blockRWLock = make(map[string]*sync.RWMutex)
 
@@ -61,7 +61,7 @@ func (datanode *DataNode) generateBlockReport() common.BlockReport {
 		slog.Error("error reading directory", "error", err)
 	}
 
-	return common.BlockReport{
+	return common.BlockReportRequest{
 		Endpoint:      datanode.dataNodeEndpoint,
 		BlockMetadata: blockMetadata,
 	}
@@ -76,15 +76,15 @@ func (datanode *DataNode) sendBlockReport() bool {
 	}
 
 	blockReport := datanode.generateBlockReport()
-	var staleBlocks common.BlockReport
+	var staleBlocks common.BlockReportResponse
 	err = client.Call("NameNode.ReportBlock", blockReport, &staleBlocks)
 	if err != nil {
 		slog.Error("error sending block report to namenode", "error", err)
 		return false
 	}
-	for _, block := range staleBlocks.BlockMetadata {
+	for _, blockID := range staleBlocks.BlockIDs {
 		var unused bool
-		datanode.DeleteBlock(block.BlockID, &unused)
+		datanode.DeleteBlock(blockID, &unused)
 	}
 	return true
 }
