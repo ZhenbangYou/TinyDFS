@@ -1,9 +1,5 @@
 package common
 
-type FileAttributes struct {
-	Size uint
-}
-
 type BlockMetadata struct {
 	FileName   string
 	BlockIndex uint

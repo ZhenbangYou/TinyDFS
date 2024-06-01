@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -8,14 +9,18 @@ import (
 	"net/http"
 	"net/rpc"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/emirpasic/gods/maps/treemap"
+	"github.com/go-redis/redis/v8"
 
 	"github.com/ZhenbangYou/TinyDFS/tiny-dfs/common"
 )
+
+var ctx = context.Background()
 
 type blockStorageInfo struct {
 	LatestVersion uint     // The latest version of the block, version = 0 represents invalid
@@ -29,10 +34,9 @@ type internalLeaseInfo struct {
 }
 
 type iNode struct {
-	fileAttributes common.FileAttributes
-	rwlock         *sync.RWMutex // Per-file rwlock
-	storageInfo    []blockStorageInfo
-	lease          internalLeaseInfo
+	rwlock      *sync.RWMutex // Per-file rwlock
+	storageInfo []blockStorageInfo
+	lease       internalLeaseInfo
 }
 
 type dataNodeInfo struct {
@@ -50,7 +54,14 @@ type NameNode struct {
 	datanodeLoadRank *treemap.Map   // block count (int) -> hashset of endpoints
 	datanodeLoad     map[string]int // endpoint -> #blocks it has
 	datanodeLoadLock *sync.Mutex
+
+	rdb *redis.Client
+	// structure of the Redis DB:
+	// One Redis set: filenames -- the set of all file names
+	// For each filename, one Redis hash: block index -> version
 }
+
+const FILE_NAME_SET_KEY = "fileNames"
 
 // `success` will be true iff the file doesn't exist
 func (server *NameNode) Create(path string, success *bool) error {
@@ -64,13 +75,14 @@ func (server *NameNode) Create(path string, success *bool) error {
 		*success = false
 		return errors.New("file exists")
 	} else {
-		metadata := common.FileAttributes{
-			Size: 0,
-		}
 		server.inodes[path] = iNode{
-			fileAttributes: metadata,
-			rwlock:         new(sync.RWMutex),
-			storageInfo:    nil,
+			rwlock:      new(sync.RWMutex),
+			storageInfo: nil,
+		}
+		err := server.rdb.SAdd(ctx, FILE_NAME_SET_KEY, path).Err()
+		if err != nil {
+			slog.Error("Redis SADD", "error", err)
+			return err
 		}
 		*success = true
 		return nil
@@ -85,7 +97,7 @@ func (server *NameNode) Exists(path string, exists *bool) error {
 	return nil
 }
 
-// TODO: 2pc, notify all the datanodes to delete the blocks before responding
+// TODO: notify all the datanodes to delete the blocks
 // This RPC doesn't return anything
 func (server *NameNode) Delete(path string, unused *bool) error {
 	slog.Info("Delete request", "path", path)
@@ -94,14 +106,36 @@ func (server *NameNode) Delete(path string, unused *bool) error {
 	defer server.inodeRWLock.Unlock()
 
 	delete(server.inodes, path)
+	err := server.rdb.SRem(ctx, FILE_NAME_SET_KEY, path).Err()
+	if err != nil {
+		slog.Error("Redis SREM", "error", err)
+		return err
+	}
+	err = server.rdb.Del(ctx, path).Err()
+	if err != nil {
+		slog.Error("Redis DEL", "error", err)
+		return err
+	}
 	return nil
 }
 
-func (server *NameNode) GetAttributes(path string, fileAttributes *common.FileAttributes) error {
-	slog.Info("GetAttributes request", "path", path)
+func (server *NameNode) GetSize(path string, size *uint) error {
+	slog.Info("GetSize request", "path", path)
 	server.inodeRWLock.RLock()
-	defer server.inodeRWLock.RUnlock()
-	*fileAttributes = server.inodes[path].fileAttributes
+	inode, ok := server.inodes[path]
+	server.inodeRWLock.RUnlock()
+
+	if !ok {
+		return errors.New("file doesn't exist")
+	}
+
+	if len(inode.storageInfo) == 0 {
+		*size = 0
+	} else {
+		*size = uint((len(inode.storageInfo)-1)*common.BLOCK_SIZE) +
+			inode.storageInfo[len(inode.storageInfo)-1].Size
+	}
+
 	return nil
 }
 
@@ -153,16 +187,7 @@ func (server *NameNode) ReportBlock(blockReport common.BlockReport, success *boo
 		// TODO: check the semantics here
 		inode, exists := server.inodes[blockMetadata.FileName]
 		if !exists {
-			inode = iNode{
-				fileAttributes: common.FileAttributes{
-					Size: 0,
-				},
-				rwlock:      new(sync.RWMutex),
-				storageInfo: nil,
-			}
-			server.inodes[blockMetadata.FileName] = inode
-			slog.Debug("Create new inode", "fileName", blockMetadata.FileName,
-				"fileAttributes", inode.fileAttributes, "storageInfo", inode.storageInfo)
+			continue
 		}
 
 		inode.rwlock.Lock()
@@ -172,18 +197,7 @@ func (server *NameNode) ReportBlock(blockReport common.BlockReport, success *boo
 			// Block info exists in namenode
 
 			storageInfo := inode.storageInfo[blockMetadata.BlockIndex]
-			if blockMetadata.Version > inode.storageInfo[blockMetadata.BlockIndex].LatestVersion {
-				// Find a newer version
-				inode.storageInfo[blockMetadata.BlockIndex] = blockStorageInfo{
-					LatestVersion: blockMetadata.Version,
-					Size:          blockMetadata.Size,
-					DataNodes:     []string{blockReport.Endpoint},
-				}
-				slog.Debug("Update storage info",
-					"file name", blockMetadata.FileName,
-					"block index", blockMetadata.BlockIndex,
-					slog.Any("storageInfo", inode.storageInfo[blockMetadata.BlockIndex]))
-			} else if blockMetadata.Version == inode.storageInfo[blockMetadata.BlockIndex].LatestVersion {
+			if blockMetadata.Version == inode.storageInfo[blockMetadata.BlockIndex].LatestVersion {
 				// Same version, find a new replica
 				storageInfo.DataNodes = append(
 					inode.storageInfo[blockMetadata.BlockIndex].DataNodes, blockReport.Endpoint)
@@ -195,38 +209,8 @@ func (server *NameNode) ReportBlock(blockReport common.BlockReport, success *boo
 			} else {
 				// TODO: mark as stale block and return the info to the datanode
 			}
-		} else {
-			// Block info doesn't exist in namenode
-			slog.Debug("Create new storage info",
-				"file name", blockMetadata.FileName,
-				"block index", blockMetadata.BlockIndex)
-			for !(blockMetadata.BlockIndex < uint(len(inode.storageInfo))) {
-				inode.storageInfo = append(inode.storageInfo, blockStorageInfo{
-					LatestVersion: common.MIN_VALID_VERSION_NUMBER - 1,
-				})
-			}
-			inode.storageInfo[blockMetadata.BlockIndex] = blockStorageInfo{
-				LatestVersion: blockMetadata.Version,
-				Size:          blockMetadata.Size,
-				DataNodes:     []string{blockReport.Endpoint},
-			}
 		}
-
 		inode.rwlock.Unlock()
-	}
-
-	// Update the file attributes
-	for fileName, inode := range server.inodes {
-		inode.rwlock.Lock()
-		totalSize := uint(0)
-		for _, storageInfo := range inode.storageInfo {
-			totalSize += storageInfo.Size
-		}
-		inode.fileAttributes.Size = totalSize
-		inode.rwlock.Unlock()
-
-		slog.Debug("Updated inode", slog.String("fileName", fileName),
-			"fileAttributes", inode.fileAttributes, slog.Any("storageInfo", inode.storageInfo))
 	}
 
 	slog.Info("ReportBlock success", "dataNodeEndpoint", blockReport.Endpoint)
@@ -300,7 +284,6 @@ func (server *NameNode) heartbeatMonitor() {
 }
 
 // Pick `num` datanodes to hold a new block
-// TODO: optimize selection for load balancing
 func (server *NameNode) pickDatanodes(num uint) []string {
 	result := make([]string, 0, num)
 
@@ -393,7 +376,6 @@ func (server *NameNode) GetBlockLocations(args *common.GetBlockLocationsRequest,
 			// }
 			// dataNode := aliveStorageNodes[rand.Intn(len(aliveStorageNodes))]
 
-			// TODO: should we not disclose version number to client?
 			blockInfoList = append(blockInfoList, common.BlockInfo{
 				Version:           inode.storageInfo[i].LatestVersion,
 				DataNodeEndpoints: aliveStorageNodes,
@@ -434,21 +416,37 @@ func (server *NameNode) BumpBlockVersion(args common.BlockVersionBump, unused *b
 	}
 	if args.BlockIndex < uint(len(oldInode.storageInfo)) {
 		// Block exists
-		oldEntry := oldInode.storageInfo[args.BlockIndex]
-		if oldEntry.LatestVersion < args.Version {
-			newInode.fileAttributes.Size -= oldEntry.Size
-			newInode.fileAttributes.Size += newEntry.Size
+		if oldInode.storageInfo[args.BlockIndex].LatestVersion < args.Version {
 			newInode.storageInfo[args.BlockIndex] = newEntry
+			server.rdb.HSet(ctx, args.FileName, args.BlockIndex, args.Version)
+			err := server.rdb.HSet(ctx, args.FileName, args.BlockIndex, args.Version).Err()
+			if err != nil {
+				slog.Error("Redis HSET", "error", err)
+			}
 		}
 	} else {
 		// New block
-		for !(args.BlockIndex < uint(len(newInode.storageInfo))) {
+		for {
 			newInode.storageInfo = append(newInode.storageInfo, blockStorageInfo{
 				LatestVersion: common.MIN_VALID_VERSION_NUMBER - 1,
 			})
+			blockIndex := len(newInode.storageInfo) - 1
+			if args.BlockIndex < uint(len(newInode.storageInfo)) {
+				// Last block to add
+				err := server.rdb.HSet(ctx, args.FileName, blockIndex, args.Version).Err()
+				if err != nil {
+					slog.Error("Redis HSET", "error", err)
+				}
+				break
+			} else {
+				// Block in the middle, still in hollow state
+				err := server.rdb.HSet(ctx, args.FileName, blockIndex, common.MIN_VALID_VERSION_NUMBER-1).Err()
+				if err != nil {
+					slog.Error("Redis HSET", "error", err)
+				}
+			}
 		}
 
-		newInode.fileAttributes.Size += newEntry.Size
 		newInode.storageInfo[args.BlockIndex] = newEntry
 
 		server.datanodeLoadLock.Lock()
@@ -569,8 +567,55 @@ func main() {
 		datanodeLoadRank: treemap.NewWithIntComparator(),
 		datanodeLoad:     make(map[string]int),
 		datanodeLoadLock: new(sync.Mutex),
+		rdb:              redis.NewClient(&redis.Options{}),
 	}
 	slog.Info("Initialized namenode", "nameNodeEndpoint", nameNodeEndpoint)
+
+	exists, err := server.rdb.Exists(ctx, FILE_NAME_SET_KEY).Result()
+	if err != nil {
+		panic(fmt.Sprintln("Redis EXISTS error", err))
+	}
+
+	// Read block version from Redis
+	if exists > 0 {
+		fileNames, err := server.rdb.SMembers(ctx, FILE_NAME_SET_KEY).Result()
+		if err != nil {
+			panic(fmt.Sprintln("Redis SMEMBERS error", err))
+		}
+		for _, fileName := range fileNames {
+			inode := iNode{
+				rwlock: new(sync.RWMutex),
+				lease:  internalLeaseInfo{},
+			}
+			exists, err := server.rdb.Exists(ctx, fileName).Result()
+			if err != nil {
+				panic(fmt.Sprintln("Redis EXISTS", "error", err))
+			}
+			if exists > 0 {
+				// if exists == 0, the file will be empty
+
+				blocks, err := server.rdb.HGetAll(ctx, fileName).Result()
+				if err != nil {
+					panic(fmt.Sprintln("Redis HGETALL", "error", err))
+				}
+				inode.storageInfo = make([]blockStorageInfo, len(blocks))
+				for blockIndexString, versionString := range blocks {
+					blockIndex, err := strconv.ParseUint(blockIndexString, 10, 64)
+					if err != nil {
+						panic(fmt.Sprintln("block index string can't be parsed: ", blockIndexString))
+					}
+					version, err := strconv.ParseUint(versionString, 10, 64)
+					if err != nil {
+						panic(fmt.Sprintln("version string can't be parsed: ", versionString))
+					}
+					inode.storageInfo[blockIndex] = blockStorageInfo{
+						LatestVersion: uint(version),
+					}
+				}
+			}
+			server.inodes[fileName] = inode
+		}
+	}
 
 	// Set up namenode RPC server
 	port := strings.Split(nameNodeEndpoint, ":")[1]
@@ -578,11 +623,10 @@ func main() {
 	rpc.HandleHTTP()
 	listener, err := net.Listen("tcp", ":"+port) // Listen on all addresses
 	if err != nil {
-		slog.Error("listen error", "error", err)
+		panic(fmt.Sprintln("listen error", err))
 	}
 	http.Serve(listener, nil)
 
 	// Start the heartbeat monitor
 	go server.heartbeatMonitor()
-
 }

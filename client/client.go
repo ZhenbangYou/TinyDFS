@@ -56,7 +56,7 @@ func (dfs *DistributedFileSystem) Exists(fileName string) bool {
 	select {
 	case <-asyncRpcCall.Done:
 		if asyncRpcCall.Error != nil {
-			slog.Error("Exists RPC error", "error", asyncRpcCall.Error)
+			slog.Error("Exists RPC", "error", asyncRpcCall.Error)
 			return false
 		} else {
 			return success
@@ -76,7 +76,7 @@ func (dfs *DistributedFileSystem) Delete(fileName string) bool {
 	select {
 	case <-asyncRpcCall.Done:
 		if asyncRpcCall.Error != nil {
-			slog.Error("Delete RPC error", "error", asyncRpcCall.Error)
+			slog.Error("Delete RPC", "error", asyncRpcCall.Error)
 			return false
 		} else {
 			return true
@@ -87,21 +87,21 @@ func (dfs *DistributedFileSystem) Delete(fileName string) bool {
 	}
 }
 
-func (dfs *DistributedFileSystem) GetAttributes(fileName string) (common.FileAttributes, bool) {
-	var fileAttributes common.FileAttributes
-	asyncRpcCall := dfs.namenodeClient.Go("NameNode.GetAttributes", fileName, &fileAttributes, nil)
+func (dfs *DistributedFileSystem) GetSize(fileName string) (uint, bool) {
+	var size uint
+	asyncRpcCall := dfs.namenodeClient.Go("NameNode.GetSize", fileName, &size, nil)
 
 	select {
 	case <-asyncRpcCall.Done:
 		if asyncRpcCall.Error != nil {
-			slog.Error("GetAttributes RPC error", "error", asyncRpcCall.Error)
-			return common.FileAttributes{}, false
+			slog.Error("GetSize RPC", "error", asyncRpcCall.Error)
+			return 0, false
 		} else {
-			return fileAttributes, true
+			return size, true
 		}
 	case <-time.After(common.RPC_TIMEOUT):
 		slog.Error("GetAttributes RPC timeout", "DFS endpoint", dfs.endpoint, "file name", fileName)
-		return common.FileAttributes{}, false
+		return 0, false
 	}
 }
 
