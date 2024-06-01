@@ -10,6 +10,9 @@ DATANODE_DIR="datanode_data"
 # Define the logs directory
 LOG_DIR="logs"
 
+# Define the pid directory
+PID_DIR="pids"
+
 # Function to gracefully terminate processes
 terminate_processes() {
     local process_name=$1

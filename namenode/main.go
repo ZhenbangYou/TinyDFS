@@ -262,9 +262,9 @@ func (server *NameNode) replicationMonitor() {
 		for fileName, inode := range server.inodes {
 			inode.rwlock.RLock()
 			for blockIndex, storageInfo := range inode.storageInfo {
-				if len(storageInfo.DataNodes) < common.BLOCK_REPLICATION && 
+				if len(storageInfo.DataNodes) < common.BLOCK_REPLICATION &&
 					storageInfo.LatestVersion >= common.MIN_VALID_VERSION_NUMBER {
-						
+
 					// Under-replicated block
 					slog.Info("Under-replicated block", "fileName", inode.fileAttributes, "blockIndex", blockIndex)
 
@@ -288,14 +288,14 @@ func (server *NameNode) replicationMonitor() {
 					)
 
 					// Schedule replication: send a replication request to the datanode
-					go func(fileName string, blockIndex uint, replicaEndpoints []string, version uint, dataNodeEndpoint string) {
+					go func(fileName string, blockIndex uint, replicaEndpoints []string, storageInfo BlockStorageInfo, dataNodeEndpoint string) {
 						server.datanodeRWLock.RLock()
 						defer server.datanodeRWLock.RUnlock()
 
 						createReplicationRequest := common.CreateReplicationRequest{
 							FileName:         fileName,
 							BlockIndex:       blockIndex,
-							Version:          version,
+							Version:          storageInfo.LatestVersion,
 							ReplicaEndpoints: replicaEndpoints,
 						}
 
@@ -333,7 +333,7 @@ func (server *NameNode) replicationMonitor() {
 							slog.Error("Replication request timeout", "fileName", fileName, "blockIndex", blockIndex, "replicaEndpoints", replicaEndpoints)
 						}
 
-					}(fileName, blockIndex, replicaEndpoints, storageInfo.LatestVersion, dataNodeEndpoint)
+					}(fileName, blockIndex, replicaEndpoints, storageInfo, dataNodeEndpoint)
 
 				}
 			}
