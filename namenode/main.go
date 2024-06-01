@@ -190,7 +190,7 @@ func (server *NameNode) RegisterDataNode(dataNodeEndpoint string, success *bool)
 
 // NameNode receives block report from DataNode,
 // and updates all block storage info in the corresponding inode
-func (server *NameNode) ReportBlock(blockReport common.BlockReport, success *bool) error {
+func (server *NameNode) ReportBlock(blockReport common.BlockReport, staleBlocks *common.BlockReport) error {
 	slog.Info("ReportBlock request", "dataNodeEndpoint", blockReport.Endpoint,
 		slog.Any("Block MetaData", blockReport.BlockMetadata))
 
@@ -217,38 +217,39 @@ func (server *NameNode) ReportBlock(blockReport common.BlockReport, success *boo
 		inode.rwlock.Unlock()
 	}
 
+	staleBlocks = new(common.BlockReport)
+
 	for _, blockMetadata := range blockReport.BlockMetadata {
 		inode, exists := server.inodes[blockMetadata.FileName]
-		if !exists {
-			continue
-		}
+		stale := true
+		if exists {
+			inode.rwlock.Lock()
 
-		inode.rwlock.Lock()
+			// Update the storage info
+			if blockMetadata.BlockIndex < uint(len(inode.storageInfo)) {
+				// Block info exists in namenode
 
-		// Update the storage info
-		if blockMetadata.BlockIndex < uint(len(inode.storageInfo)) {
-			// Block info exists in namenode
+				storageInfo := inode.storageInfo[blockMetadata.BlockIndex]
+				if blockMetadata.Version == storageInfo.LatestVersion {
+					// Find a new replica
+					storageInfo.DataNodes = append(storageInfo.DataNodes, blockReport.Endpoint)
+					inode.storageInfo[blockMetadata.BlockIndex] = storageInfo
+					slog.Debug("Append storage info",
+						"file name", blockMetadata.FileName,
+						"block index", blockMetadata.BlockIndex,
+						slog.Any("storageInfo", inode.storageInfo[blockMetadata.BlockIndex]))
 
-			storageInfo := inode.storageInfo[blockMetadata.BlockIndex]
-			if blockMetadata.Version == inode.storageInfo[blockMetadata.BlockIndex].LatestVersion {
-				// Same version, find a new replica
-				storageInfo.DataNodes = append(
-					inode.storageInfo[blockMetadata.BlockIndex].DataNodes, blockReport.Endpoint)
-				inode.storageInfo[blockMetadata.BlockIndex] = storageInfo
-				slog.Debug("Append storage info",
-					"file name", blockMetadata.FileName,
-					"block index", blockMetadata.BlockIndex,
-					slog.Any("storageInfo", inode.storageInfo[blockMetadata.BlockIndex]))
-			} else {
-				// TODO: mark as stale block and return the info to the datanode
+					stale = false
+				}
 			}
+			inode.rwlock.Unlock()
 		}
-		inode.rwlock.Unlock()
+		if stale {
+			staleBlocks.BlockMetadata = append(staleBlocks.BlockMetadata, blockMetadata)
+		}
 	}
 
-	slog.Info("ReportBlock success", "dataNodeEndpoint", blockReport.Endpoint)
-
-	*success = true
+	slog.Info("ReportBlock", "dataNodeEndpoint", blockReport.Endpoint)
 
 	blockCount := len(blockReport.BlockMetadata)
 	server.datanodeLoadLock.Lock()

@@ -74,14 +74,19 @@ func (datanode *DataNode) sendBlockReport() bool {
 	}
 
 	blockReport := datanode.generateBlockReport()
-	var success bool
-	err = client.Call("NameNode.ReportBlock", blockReport, &success)
+	var staleBlocks common.BlockReport
+	err = client.Call("NameNode.ReportBlock", blockReport, &staleBlocks)
 	if err != nil {
 		slog.Error("error sending block report to namenode", "error", err)
 		return false
-	} else if !success {
-		slog.Error("block report rejected by namenode")
-		return false
+	}
+	for _, block := range staleBlocks.BlockMetadata {
+		var unused bool
+		datanode.DeleteBlock(common.DeleteBlockRequest{
+			FileName:   block.FileName,
+			BlockIndex: block.BlockIndex,
+			Version:    block.Version,
+		}, &unused)
 	}
 	return true
 }
