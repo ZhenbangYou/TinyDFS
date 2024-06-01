@@ -218,8 +218,6 @@ func (server *NameNode) ReportBlock(blockReport common.BlockReport, success *boo
 	}
 
 	for _, blockMetadata := range blockReport.BlockMetadata {
-		// If the file doesn't exist, create a new inode
-		// TODO: check the semantics here
 		inode, exists := server.inodes[blockMetadata.FileName]
 		if !exists {
 			continue
