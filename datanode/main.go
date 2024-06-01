@@ -47,10 +47,12 @@ func (datanode *DataNode) generateBlockReport() common.BlockReport {
 		}
 
 		blockMetadata = append(blockMetadata, common.BlockMetadata{
-			FileName:   fileName,
-			BlockIndex: blockIndex,
-			Version:    version,
-			Size:       uint(info.Size()),
+			BlockID: common.BlockIdentifier{
+				FileName:   fileName,
+				BlockIndex: blockIndex,
+				Version:    version,
+			},
+			Size: uint(info.Size()),
 		})
 		return nil
 	})
@@ -82,11 +84,7 @@ func (datanode *DataNode) sendBlockReport() bool {
 	}
 	for _, block := range staleBlocks.BlockMetadata {
 		var unused bool
-		datanode.DeleteBlock(common.DeleteBlockRequest{
-			FileName:   block.FileName,
-			BlockIndex: block.BlockIndex,
-			Version:    block.Version,
-		}, &unused)
+		datanode.DeleteBlock(block.BlockID, &unused)
 	}
 	return true
 }
@@ -194,14 +192,14 @@ func parseBlockName(blockName string) (string, uint, uint, error) {
 }
 
 func (datanode *DataNode) ReadBlock(args common.ReadBlockRequest, response *common.ReadBlockResponse) error {
-	slog.Info("ReadBlock request", "file name", args.FileName, "block index", args.BlockIndex)
+	slog.Info("ReadBlock request", "file name", args.BlockID.FileName, "block index", args.BlockID.BlockIndex)
 
 	// TODO: check if lock is needed here
 	// datanode.blockRWLock[args.BlockName].RLock()
 	// defer datanode.blockRWLock[args.BlockName].RUnlock()
 
 	// Open the block file
-	completePath := constructBlockName(args.FileName, args.BlockIndex, args.Version)
+	completePath := constructBlockName(args.BlockID.FileName, args.BlockID.BlockIndex, args.BlockID.Version)
 	file, err := os.Open(completePath)
 	if err != nil {
 		slog.Error("error opening block file", "error", err)
@@ -222,8 +220,8 @@ func (datanode *DataNode) ReadBlock(args common.ReadBlockRequest, response *comm
 		response.Data = response.Data[:n]
 	}
 
-	slog.Debug("ReadBlock succeeded", "file name", args.FileName,
-		"block index", args.BlockIndex, "bytes read", n)
+	slog.Debug("ReadBlock succeeded", "file name", args.BlockID.FileName,
+		"block index", args.BlockID.BlockIndex, "bytes read", n)
 
 	return nil
 }
@@ -234,9 +232,9 @@ func (datanode *DataNode) ReadBlock(args common.ReadBlockRequest, response *comm
 func (datanode *DataNode) WriteBlock(args common.WriteBlockRequest, unused *bool) error {
 	slog.Info("WriteBlock request", "block info", args)
 
-	curPath := constructBlockName(args.FileName, args.BlockIndex, args.Version)
+	curPath := constructBlockName(args.BlockID.FileName, args.BlockID.BlockIndex, args.BlockID.Version)
 	tmpPath := curPath + ".tmp"
-	prevPath := constructBlockName(args.FileName, args.BlockIndex, args.Version-1)
+	prevPath := constructBlockName(args.BlockID.FileName, args.BlockID.BlockIndex, args.BlockID.Version-1)
 
 	curFile, err := os.Create(tmpPath)
 	if err != nil {
@@ -256,7 +254,7 @@ func (datanode *DataNode) WriteBlock(args common.WriteBlockRequest, unused *bool
 
 	// TODO: Significant write amplification in random writes, can be improved a lot
 	// Copy file from the previous version
-	if args.Version > common.MIN_VALID_VERSION_NUMBER {
+	if args.BlockID.Version > common.MIN_VALID_VERSION_NUMBER {
 		// If a previous version exists
 
 		prevFile, err := os.Open(prevPath)
@@ -329,9 +327,7 @@ func (datanode *DataNode) WriteBlock(args common.WriteBlockRequest, unused *bool
 		}
 
 		bumpBlockVersionRequest := common.BlockVersionBump{
-			FileName:         args.FileName,
-			BlockIndex:       args.BlockIndex,
-			Version:          args.Version,
+			BlockID:          args.BlockID,
 			Size:             blockSize,
 			ReplicaEndpoints: args.ReplicaEndpoints,
 			LeaseToken:       args.LeaseToken,
@@ -392,7 +388,7 @@ func (datanode *DataNode) WriteBlock(args common.WriteBlockRequest, unused *bool
 	}
 }
 
-func (datanode *DataNode) DeleteBlock(args common.DeleteBlockRequest, unused *bool) error {
+func (datanode *DataNode) DeleteBlock(args common.BlockIdentifier, unused *bool) error {
 	slog.Info("Delete Block request", "block", args)
 	path := constructBlockName(args.FileName, args.BlockIndex, args.Version)
 	err := os.Remove(path)

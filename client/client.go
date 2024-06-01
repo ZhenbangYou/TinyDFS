@@ -181,9 +181,11 @@ func (readHandle *ReadHandle) Read(length uint) ([]byte, error) {
 			}
 
 			readBlockRequest := common.ReadBlockRequest{
-				FileName:    readHandle.fileName,
-				BlockIndex:  blockIndex,
-				Version:     blockInfo.Version,
+				BlockID: common.BlockIdentifier{
+					FileName:   readHandle.fileName,
+					BlockIndex: blockIndex,
+					Version:    blockInfo.Version,
+				},
 				BeginOffset: beginOffset,
 				Length:      endOffset - beginOffset,
 			}
@@ -199,7 +201,10 @@ func (readHandle *ReadHandle) Read(length uint) ([]byte, error) {
 					allSucceeded = false
 				} else {
 					bufferStart := (blockIndex*common.BLOCK_SIZE + beginOffset) - readHandle.offset
-					slog.Debug("ReadBlock succeeded", "Block Index", readBlockRequest.BlockIndex, "Data", readBlockResponse.Data, "BufferStart", bufferStart)
+					slog.Debug("ReadBlock succeeded",
+						"Block Index", readBlockRequest.BlockID.BlockIndex,
+						"Data", readBlockResponse.Data,
+						"BufferStart", bufferStart)
 					copy(dataBuffer[bufferStart:], readBlockResponse.Data)
 				}
 			case <-time.After(common.READ_BLOCK_TIMEOUT):
@@ -320,9 +325,11 @@ func (writeHandle *WriteHandle) Write(data []byte) error {
 			}
 
 			writeBlockRequest := common.WriteBlockRequest{
-				FileName:         fileName,
-				BlockIndex:       blockIndex,
-				Version:          blockInfo.Version + 1,
+				BlockID: common.BlockIdentifier{
+					FileName:   fileName,
+					BlockIndex: blockIndex,
+					Version:    blockInfo.Version + 1,
+				},
 				BeginOffset:      beginOffset,
 				Data:             data[beginOffset+common.BLOCK_SIZE*blockIndex-writeHandle.offset : endOffset+common.BLOCK_SIZE*blockIndex-writeHandle.offset],
 				ReplicaEndpoints: blockInfo.DataNodeEndpoints,
@@ -343,7 +350,7 @@ func (writeHandle *WriteHandle) Write(data []byte) error {
 					slog.Error("WriteBlock RPC error", "error", asyncRpcCall.Error)
 					allSucceeded = false
 				} else {
-					slog.Debug("WriteBlock succeeded", "Block Index", writeBlockRequest.BlockIndex)
+					slog.Debug("WriteBlock succeeded", "Block Index", writeBlockRequest.BlockID.BlockIndex)
 				}
 			case <-time.After(writeBlockTimeout):
 				slog.Error("WriteBlock RPC timeout", "DataNode Endpoint", dataNodeEndpoint)

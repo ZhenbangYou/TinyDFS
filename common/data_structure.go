@@ -1,10 +1,14 @@
 package common
 
-type BlockMetadata struct {
+type BlockIdentifier struct {
 	FileName   string
 	BlockIndex uint
 	Version    uint
-	Size       uint
+}
+
+type BlockMetadata struct {
+	BlockID BlockIdentifier
+	Size    uint
 }
 
 type BlockReport struct {
@@ -35,9 +39,7 @@ type BlockInfo struct {
 
 // Request to read a block with the specified name and byte range [BeginOffset, EndOffset)
 type ReadBlockRequest struct {
-	FileName    string
-	BlockIndex  uint
-	Version     uint
+	BlockID     BlockIdentifier
 	BeginOffset uint
 	Length      uint
 }
@@ -47,9 +49,7 @@ type ReadBlockResponse struct {
 }
 
 type WriteBlockRequest struct {
-	FileName    string
-	BlockIndex  uint
-	Version     uint
+	BlockID     BlockIdentifier
 	BeginOffset uint
 
 	Data []byte
@@ -61,16 +61,8 @@ type WriteBlockRequest struct {
 	LeaseToken uint64
 }
 
-type DeleteBlockRequest struct {
-	FileName   string
-	BlockIndex uint
-	Version    uint
-}
-
 type BlockVersionBump struct {
-	FileName         string
-	BlockIndex       uint
-	Version          uint
+	BlockID          BlockIdentifier
 	Size             uint
 	ReplicaEndpoints []string
 	LeaseToken       uint64

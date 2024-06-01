@@ -135,7 +135,7 @@ func (server *NameNode) Delete(fileName string, unused *bool) error {
 				// No need to wait, just let them run
 				go func(fileName string, blockIndex uint, version uint) {
 					var unused bool
-					datanodeConn.Call("DataNode.DeleteBlock", common.DeleteBlockRequest{
+					datanodeConn.Call("DataNode.DeleteBlock", common.BlockIdentifier{
 						FileName:   fileName,
 						BlockIndex: blockIndex,
 						Version:    version,
@@ -150,7 +150,7 @@ func (server *NameNode) Delete(fileName string, unused *bool) error {
 
 func (server *NameNode) GetSize(fileName string, size *uint) error {
 	if len(server.blockReportsReceived)-1+common.BLOCK_REPLICATION < int(server.numDataNodes) {
-		return errors.New("namenode waiting for more block report for initialization")
+		return errors.New("namenode waiting for more block reports for initialization")
 	}
 
 	slog.Info("GetSize request", "path", fileName)
@@ -220,24 +220,24 @@ func (server *NameNode) ReportBlock(blockReport common.BlockReport, staleBlocks 
 	staleBlocks = new(common.BlockReport)
 
 	for _, blockMetadata := range blockReport.BlockMetadata {
-		inode, exists := server.inodes[blockMetadata.FileName]
+		inode, exists := server.inodes[blockMetadata.BlockID.FileName]
 		stale := true
 		if exists {
 			inode.rwlock.Lock()
 
 			// Update the storage info
-			if blockMetadata.BlockIndex < uint(len(inode.storageInfo)) {
+			if blockMetadata.BlockID.BlockIndex < uint(len(inode.storageInfo)) {
 				// Block info exists in namenode
 
-				storageInfo := inode.storageInfo[blockMetadata.BlockIndex]
-				if blockMetadata.Version == storageInfo.LatestVersion {
+				storageInfo := inode.storageInfo[blockMetadata.BlockID.BlockIndex]
+				if blockMetadata.BlockID.Version == storageInfo.LatestVersion {
 					// Find a new replica
 					storageInfo.DataNodes = append(storageInfo.DataNodes, blockReport.Endpoint)
-					inode.storageInfo[blockMetadata.BlockIndex] = storageInfo
+					inode.storageInfo[blockMetadata.BlockID.BlockIndex] = storageInfo
 					slog.Debug("Append storage info",
-						"file name", blockMetadata.FileName,
-						"block index", blockMetadata.BlockIndex,
-						slog.Any("storageInfo", inode.storageInfo[blockMetadata.BlockIndex]))
+						"file name", blockMetadata.BlockID.FileName,
+						"block index", blockMetadata.BlockID.BlockIndex,
+						slog.Any("storageInfo", inode.storageInfo[blockMetadata.BlockID.BlockIndex]))
 
 					stale = false
 				}
@@ -344,7 +344,7 @@ func (server *NameNode) pickDatanodes(num uint) []string {
 // TODO: only return DataNode Endpoint ?
 func (server *NameNode) GetBlockLocations(args *common.GetBlockLocationsRequest, reply *common.GetBlockLocationsResponse) error {
 	if len(server.blockReportsReceived)-1+common.BLOCK_REPLICATION < int(server.numDataNodes) {
-		return errors.New("namenode waiting for more block report for initialization")
+		return errors.New("namenode waiting for more block reports for initialization")
 	}
 
 	slog.Info("GetBlockLocations", "file", args.FileName)
@@ -431,10 +431,10 @@ func (server *NameNode) GetBlockLocations(args *common.GetBlockLocationsRequest,
 func (server *NameNode) BumpBlockVersion(args common.BlockVersionBump, unused *bool) error {
 	// Ensure file exists
 	server.inodeRWLock.RLock()
-	oldInode, ok := server.inodes[args.FileName]
+	oldInode, ok := server.inodes[args.BlockID.FileName]
 	if !ok {
 		server.inodeRWLock.RUnlock()
-		return errors.New(fmt.Sprint("file not found: ", args.FileName))
+		return errors.New(fmt.Sprint("file not found: ", args.BlockID.FileName))
 	}
 	server.inodeRWLock.RUnlock()
 
@@ -448,16 +448,16 @@ func (server *NameNode) BumpBlockVersion(args common.BlockVersionBump, unused *b
 
 	newInode := oldInode
 	newEntry := blockStorageInfo{
-		LatestVersion: args.Version,
+		LatestVersion: args.BlockID.Version,
 		Size:          args.Size,
 		DataNodes:     args.ReplicaEndpoints,
 	}
-	if args.BlockIndex < uint(len(oldInode.storageInfo)) {
+	if args.BlockID.BlockIndex < uint(len(oldInode.storageInfo)) {
 		// Block exists
-		if oldInode.storageInfo[args.BlockIndex].LatestVersion < args.Version {
-			newInode.storageInfo[args.BlockIndex] = newEntry
-			server.rdb.HSet(ctx, args.FileName, args.BlockIndex, args.Version)
-			err := server.rdb.HSet(ctx, args.FileName, args.BlockIndex, args.Version).Err()
+		if oldInode.storageInfo[args.BlockID.BlockIndex].LatestVersion < args.BlockID.Version {
+			newInode.storageInfo[args.BlockID.BlockIndex] = newEntry
+			server.rdb.HSet(ctx, args.BlockID.FileName, args.BlockID.BlockIndex, args.BlockID.Version)
+			err := server.rdb.HSet(ctx, args.BlockID.FileName, args.BlockID.BlockIndex, args.BlockID.Version).Err()
 			if err != nil {
 				slog.Error("Redis HSET", "error", err)
 			}
@@ -469,23 +469,23 @@ func (server *NameNode) BumpBlockVersion(args common.BlockVersionBump, unused *b
 				LatestVersion: common.MIN_VALID_VERSION_NUMBER - 1,
 			})
 			blockIndex := len(newInode.storageInfo) - 1
-			if args.BlockIndex < uint(len(newInode.storageInfo)) {
+			if args.BlockID.BlockIndex < uint(len(newInode.storageInfo)) {
 				// Last block to add
-				err := server.rdb.HSet(ctx, args.FileName, blockIndex, args.Version).Err()
+				err := server.rdb.HSet(ctx, args.BlockID.FileName, blockIndex, args.BlockID.Version).Err()
 				if err != nil {
 					slog.Error("Redis HSET", "error", err)
 				}
 				break
 			} else {
 				// Block in the middle, still in hollow state
-				err := server.rdb.HSet(ctx, args.FileName, blockIndex, common.MIN_VALID_VERSION_NUMBER-1).Err()
+				err := server.rdb.HSet(ctx, args.BlockID.FileName, blockIndex, common.MIN_VALID_VERSION_NUMBER-1).Err()
 				if err != nil {
 					slog.Error("Redis HSET", "error", err)
 				}
 			}
 		}
 
-		newInode.storageInfo[args.BlockIndex] = newEntry
+		newInode.storageInfo[args.BlockID.BlockIndex] = newEntry
 
 		server.datanodeLoadLock.Lock()
 		defer server.datanodeLoadLock.Unlock()
@@ -514,7 +514,7 @@ func (server *NameNode) BumpBlockVersion(args common.BlockVersionBump, unused *b
 			}
 		}
 	}
-	server.inodes[args.FileName] = newInode
+	server.inodes[args.BlockID.FileName] = newInode
 	return nil
 }
 
