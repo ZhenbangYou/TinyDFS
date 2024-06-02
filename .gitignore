@@ -33,5 +33,6 @@ examples/read/read
 # Log files
 *.log
 
-# Datanode test files
+# Test files
 datanode_data/*
+pids/*

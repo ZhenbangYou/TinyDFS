@@ -36,7 +36,7 @@ func main() {
 	// Read the specified portion of the file
 	data, err := readHandle.Read(*length)
 	if err == nil {
-		fmt.Println("read", string(data))
+		fmt.Println("read content: ", string(data))
 	} else {
 		fmt.Println("read failed", err)
 	}
