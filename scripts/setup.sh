@@ -22,7 +22,8 @@ mkdir -p "$DATANODE_DIR" "$LOG_DIR" "$PID_DIR"
 
 start_namenode() {
   NAMENODE_ENDPOINT=$(cat "$NAMENODE_CONFIG")
-  ./namenode/namenode "$NAMENODE_ENDPOINT" "./$LOG_DIR/namenode.log" &
+  NUM_DATANODES=$(wc -l < "$DATANODE_CONFIG")
+  ./namenode/namenode "$NAMENODE_ENDPOINT" $NUM_DATANODES "./$LOG_DIR/namenode.log" &
   NAMENODE_PID=$!
   if [[ -z "$NAMENODE_PID" ]]; then
     echo "Failed to start Namenode"
@@ -31,15 +32,6 @@ start_namenode() {
   echo $NAMENODE_PID > "$PID_DIR/namenode.pid"
   echo "Namenode started with PID $NAMENODE_PID"
 }
-
-# Write Datanode test files
-python ./scripts/write_test_file.py --file_path test --block_num 1
-python ./scripts/write_test_file.py --file_path test_dir/test2
-
-# Start Namenode
-NAMENODE_ENDPOINT=$(cat "$NAMENODE_CONFIG")
-NUM_DATANODES=$(wc -l < "$DATANODE_CONFIG")
-./namenode/namenode "$NAMENODE_ENDPOINT" $NUM_DATANODES "./$LOG_DIR/namenode.log" &
 
 start_datanode() {
   local ID=$1
