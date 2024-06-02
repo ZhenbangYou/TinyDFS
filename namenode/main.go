@@ -111,15 +111,20 @@ func (server *NameNode) Delete(fileName string, unused *bool) error {
 	defer server.inodeRWLock.Unlock()
 
 	if exists {
-		err := server.rdb.SRem(ctx, FILE_NAME_SET_KEY, fileName).Err()
+		pipe := server.rdb.TxPipeline()
+		err := pipe.SRem(ctx, FILE_NAME_SET_KEY, fileName).Err()
 		if err != nil {
 			slog.Error("Redis SREM", "error", err)
 			return err
 		}
-		err = server.rdb.Del(ctx, fileName).Err()
+		err = pipe.Del(ctx, fileName).Err()
 		if err != nil {
 			slog.Error("Redis DEL", "error", err)
 			return err
+		}
+		_, err = pipe.Exec(ctx)
+		if err != nil {
+			slog.Error("Redis Transaction", "error", err)
 		}
 
 		for blockIndex, blockInfo := range inode.storageInfo {
@@ -459,7 +464,6 @@ func (server *NameNode) BumpBlockVersion(args common.BlockVersionBump, unused *b
 		// Block exists
 		if oldInode.storageInfo[args.BlockID.BlockIndex].LatestVersion < args.BlockID.Version {
 			newInode.storageInfo[args.BlockID.BlockIndex] = newEntry
-			server.rdb.HSet(ctx, args.BlockID.FileName, args.BlockID.BlockIndex, args.BlockID.Version)
 			err := server.rdb.HSet(ctx, args.BlockID.FileName, args.BlockID.BlockIndex, args.BlockID.Version).Err()
 			if err != nil {
 				slog.Error("Redis HSET", "error", err)
