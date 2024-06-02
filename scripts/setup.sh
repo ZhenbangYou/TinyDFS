@@ -32,12 +32,14 @@ start_namenode() {
   echo "Namenode started with PID $NAMENODE_PID"
 }
 
-kill_namenode() {
-  NAMENODE_PID=$(cat "$PID_DIR/namenode.pid")
-  kill $NAMENODE_PID
-  wait $NAMENODE_PID 2>/dev/null
-  echo "Namenode killed"
-}
+# Write Datanode test files
+python ./scripts/write_test_file.py --file_path test --block_num 1
+python ./scripts/write_test_file.py --file_path test_dir/test2
+
+# Start Namenode
+NAMENODE_ENDPOINT=$(cat "$NAMENODE_CONFIG")
+NUM_DATANODES=$(wc -l < "$DATANODE_CONFIG")
+./namenode/namenode "$NAMENODE_ENDPOINT" $NUM_DATANODES "./$LOG_DIR/namenode.log" &
 
 start_datanode() {
   local ID=$1

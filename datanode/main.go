@@ -28,7 +28,7 @@ type DataNode struct {
 
 // Go over all the files in the subdir,
 // Create locks and generate a block report for the namenode
-func (datanode *DataNode) generateBlockReport() common.BlockReport {
+func (datanode *DataNode) generateBlockReport() common.BlockReportRequest {
 	var blockMetadata []common.BlockMetadata
 	datanode.blockRWLock = make(map[string]*sync.RWMutex)
 
@@ -47,10 +47,12 @@ func (datanode *DataNode) generateBlockReport() common.BlockReport {
 		}
 
 		blockMetadata = append(blockMetadata, common.BlockMetadata{
-			FileName:   fileName,
-			BlockIndex: blockIndex,
-			Version:    version,
-			Size:       uint(info.Size()),
+			BlockID: common.BlockIdentifier{
+				FileName:   fileName,
+				BlockIndex: blockIndex,
+				Version:    version,
+			},
+			Size: uint(info.Size()),
 		})
 		return nil
 	})
@@ -59,7 +61,7 @@ func (datanode *DataNode) generateBlockReport() common.BlockReport {
 		slog.Error("error reading directory", "error", err)
 	}
 
-	return common.BlockReport{
+	return common.BlockReportRequest{
 		Endpoint:      datanode.dataNodeEndpoint,
 		BlockMetadata: blockMetadata,
 	}
@@ -73,14 +75,15 @@ func (datanode *DataNode) sendBlockReport() bool {
 	}
 
 	blockReport := datanode.generateBlockReport()
-	var success bool
-	err = client.Call("NameNode.ReportBlock", blockReport, &success)
+	var staleBlocks common.BlockReportResponse
+	err = client.Call("NameNode.ReportBlock", blockReport, &staleBlocks)
 	if err != nil {
 		slog.Error("error sending block report to namenode", "error", err)
 		return false
-	} else if !success {
-		slog.Error("block report rejected by namenode")
-		return false
+	}
+	for _, blockID := range staleBlocks.BlockIDs {
+		var unused bool
+		datanode.DeleteBlock(blockID, &unused)
 	}
 	return true
 }
@@ -187,15 +190,15 @@ func parseBlockName(blockName string) (string, uint, uint, error) {
 	return fileName, uint(blockID), uint(versionID), nil
 }
 
-func (datanode *DataNode) ReadBlock(args *common.ReadBlockRequest, response *common.ReadBlockResponse) error {
-	slog.Info("ReadBlock request", "file name", args.FileName, "block index", args.BlockIndex)
+func (datanode *DataNode) ReadBlock(args common.ReadBlockRequest, response *common.ReadBlockResponse) error {
+	slog.Info("ReadBlock request", "file name", args.BlockID.FileName, "block index", args.BlockID.BlockIndex)
 
 	// TODO: check if lock is needed here
 	// datanode.blockRWLock[args.BlockName].RLock()
 	// defer datanode.blockRWLock[args.BlockName].RUnlock()
 
 	// Open the block file
-	completePath := constructBlockName(args.FileName, args.BlockIndex, args.Version)
+	completePath := constructBlockName(args.BlockID.FileName, args.BlockID.BlockIndex, args.BlockID.Version)
 	file, err := os.Open(completePath)
 	if err != nil {
 		slog.Error("error opening block file", "error", err)
@@ -216,8 +219,8 @@ func (datanode *DataNode) ReadBlock(args *common.ReadBlockRequest, response *com
 		response.Data = response.Data[:n]
 	}
 
-	slog.Debug("ReadBlock succeeded", "file name", args.FileName,
-		"block index", args.BlockIndex, "bytes read", n)
+	slog.Debug("ReadBlock succeeded", "file name", args.BlockID.FileName,
+		"block index", args.BlockID.BlockIndex, "bytes read", n)
 
 	return nil
 }
@@ -225,13 +228,14 @@ func (datanode *DataNode) ReadBlock(args *common.ReadBlockRequest, response *com
 // If this RPC returns nil (i.e., no error, meaning success), the block must have been persistently
 // written to the distributed file system. However, even if this RPC returns an error, the write
 // may still be successful, e.g., the error may be due to the lost of the reply from datanode to client
-func (datanode *DataNode) WriteBlock(args *common.WriteBlockRequest, unused *bool) error {
+func (datanode *DataNode) WriteBlock(args common.WriteBlockRequest, unused *bool) error {
 	slog.Info("WriteBlock request", "block info", args)
 
-	curPath := constructBlockName(args.FileName, args.BlockIndex, args.Version)
-	prevPath := constructBlockName(args.FileName, args.BlockIndex, args.Version-1)
+	curPath := constructBlockName(args.BlockID.FileName, args.BlockID.BlockIndex, args.BlockID.Version)
+	tmpPath := curPath + ".tmp"
+	prevPath := constructBlockName(args.BlockID.FileName, args.BlockID.BlockIndex, args.BlockID.Version-1)
 
-	curFile, err := os.Create(curPath)
+	curFile, err := os.Create(tmpPath)
 	if err != nil {
 		slog.Error("error creating file", "error", err)
 		return err
@@ -241,7 +245,7 @@ func (datanode *DataNode) WriteBlock(args *common.WriteBlockRequest, unused *boo
 	_, err = curFile.WriteAt(args.Data, int64(args.BeginOffset))
 	if err != nil {
 		slog.Error("Write block error", "error", err)
-		os.Remove(curPath)
+		os.Remove(tmpPath)
 		return err
 	}
 
@@ -249,14 +253,14 @@ func (datanode *DataNode) WriteBlock(args *common.WriteBlockRequest, unused *boo
 
 	// TODO: Significant write amplification in random writes, can be improved a lot
 	// Copy file from the previous version
-	if args.Version > common.MIN_VALID_VERSION_NUMBER {
+	if args.BlockID.Version > common.MIN_VALID_VERSION_NUMBER {
 		// If a previous version exists
 
 		prevFile, err := os.Open(prevPath)
 		if err != nil {
 			prevFile.Close()
 			curFile.Close()
-			os.Remove(curPath)
+			os.Remove(tmpPath)
 			return err
 		}
 
@@ -266,14 +270,14 @@ func (datanode *DataNode) WriteBlock(args *common.WriteBlockRequest, unused *boo
 			if err != nil {
 				prevFile.Close()
 				curFile.Close()
-				os.Remove(curPath)
+				os.Remove(tmpPath)
 				return err
 			}
 			_, err = curFile.WriteAt(buffer, 0)
 			if err != nil {
 				prevFile.Close()
 				curFile.Close()
-				os.Remove(curPath)
+				os.Remove(tmpPath)
 				return err
 			}
 		}
@@ -282,7 +286,7 @@ func (datanode *DataNode) WriteBlock(args *common.WriteBlockRequest, unused *boo
 		if err != nil {
 			prevFile.Close()
 			curFile.Close()
-			os.Remove(curPath)
+			os.Remove(tmpPath)
 			return err
 		}
 		prevSize := prevStat.Size()
@@ -296,20 +300,21 @@ func (datanode *DataNode) WriteBlock(args *common.WriteBlockRequest, unused *boo
 			if err != nil {
 				prevFile.Close()
 				curFile.Close()
-				os.Remove(curPath)
+				os.Remove(tmpPath)
 				return err
 			}
 			_, err = curFile.WriteAt(buffer, int64(CurEndOffset))
 			if err != nil {
 				prevFile.Close()
 				curFile.Close()
-				os.Remove(curPath)
+				os.Remove(tmpPath)
 				return err
 			}
 		}
 		prevFile.Close()
 	}
 	curFile.Close()
+	os.Rename(tmpPath, curPath)
 
 	if args.IndexInChain+1 == uint(len(args.ReplicaEndpoints)) {
 		// Last one in chain, report to namenode
@@ -321,9 +326,7 @@ func (datanode *DataNode) WriteBlock(args *common.WriteBlockRequest, unused *boo
 		}
 
 		bumpBlockVersionRequest := common.BlockVersionBump{
-			FileName:         args.FileName,
-			BlockIndex:       args.BlockIndex,
-			Version:          args.Version,
+			BlockID:          args.BlockID,
 			Size:             blockSize,
 			ReplicaEndpoints: args.ReplicaEndpoints,
 			LeaseToken:       args.LeaseToken,
@@ -484,6 +487,13 @@ func (datanode *DataNode) ReplicateBlock(args *common.ReplicateBlockRequest, unu
 			return nil
 		}
 	}
+}
+
+func (datanode *DataNode) DeleteBlock(args common.BlockIdentifier, unused *bool) error {
+	slog.Info("Delete Block request", "block", args)
+	path := constructBlockName(args.FileName, args.BlockIndex, args.Version)
+	err := os.Remove(path)
+	return err
 }
 
 // Command Line Args:
