@@ -786,13 +786,10 @@ func main() {
 	if err != nil {
 		panic(fmt.Sprintln("listen error", err))
 	}
-	go http.Serve(listener, nil)
 
-	// Start the heartbeat monitor
 	go server.heartbeatMonitor()
 
-	// Start the replication monitor
 	go server.replicationMonitor()
 
-	select {}
+	http.Serve(listener, nil)
 }
