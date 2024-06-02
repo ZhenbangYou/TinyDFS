@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/rpc"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -180,10 +182,9 @@ func (server *NameNode) GetSize(fileName string, size *uint) error {
 func (server *NameNode) RegisterDataNode(dataNodeEndpoint string, success *bool) error {
 	slog.Info("RegisterDataNode request", "dataNodeEndpoint", dataNodeEndpoint)
 
-	server.inodeRWLock.Lock()
-	defer server.inodeRWLock.Unlock()
+	server.datanodeRWLock.Lock()
+	defer server.datanodeRWLock.Unlock()
 
-	// TODO: Check if the datanode is already registered
 	server.datanodes[dataNodeEndpoint] = dataNodeInfo{
 		heartbeatReceived: true,
 		isAlive:           true,
@@ -279,11 +280,103 @@ func (server *NameNode) ReportBlock(
 	return nil
 }
 
+// NameNode checks if blocks are under-replicated and schedules replication
+func (server *NameNode) replicationMonitor() {
+	slog.Info("Replication monitor setup")
+
+	for {
+		time.Sleep(common.REPLICATION_MONITOR_INTERVAL) // Check periodically
+		slog.Info("Replication monitor running")
+
+		for fileName, inode := range server.inodes {
+			inode.rwlock.RLock()
+			for blockIndex, storageInfo := range inode.storageInfo {
+				if len(storageInfo.DataNodes) < common.BLOCK_REPLICATION &&
+					storageInfo.LatestVersion >= common.MIN_VALID_VERSION_NUMBER {
+
+					// Under-replicated block
+					slog.Info("Under-replicated block", "fileName", fileName, "blockIndex", blockIndex)
+
+					// Pick an alive datanode holding the block to replicate
+					var aliveStorageNodes []string
+					for _, storageNode := range storageInfo.DataNodes {
+						if server.datanodes[storageNode].isAlive {
+							aliveStorageNodes = append(aliveStorageNodes, storageNode)
+						}
+					}
+					if len(aliveStorageNodes) == 0 {
+						slog.Error("No alive storage nodes available for replication", "fileName", fileName, "blockIndex", blockIndex)
+						continue
+					}
+					dataNodeEndpoint := aliveStorageNodes[rand.Intn(len(aliveStorageNodes))]
+
+					// Pick datanodes that don't hold the block to replicate
+					replicaEndpoints := server.pickDatanodes(
+						uint(common.BLOCK_REPLICATION-len(storageInfo.DataNodes)),
+						storageInfo.DataNodes,
+					)
+
+					// Schedule replication: send a replication request to the datanode
+					go func(fileName string, blockIndex uint, replicaEndpoints []string, storageInfo blockStorageInfo, dataNodeEndpoint string) {
+						server.datanodeRWLock.RLock()
+						defer server.datanodeRWLock.RUnlock()
+
+						createReplicationRequest := common.CreateReplicationRequest{
+							FileName:         fileName,
+							BlockIndex:       blockIndex,
+							Version:          storageInfo.LatestVersion,
+							ReplicaEndpoints: replicaEndpoints,
+						}
+
+						dataNodeClient, err := rpc.DialHTTP("tcp", dataNodeEndpoint)
+						if err != nil {
+							slog.Error("dialing datanode failed", "datanode endpoint", dataNodeEndpoint, "error", err)
+							return
+						}
+
+						replicateBlockTimeout :=
+							time.Millisecond*(common.BLOCK_SIZE*1024/common.NETWORK_BANDWIDTH)*3 +
+								common.RPC_TIMEOUT
+
+						slog.Info("Send replication request", "fileName", fileName, "blockIndex", blockIndex, "replicaEndpoints", replicaEndpoints, "dataNodeEndpoint", dataNodeEndpoint)
+						slog.Debug("create", slog.Any("createReplicationRequest", createReplicationRequest))
+
+						var unused bool
+
+						asyncRpcCall := dataNodeClient.Go("DataNode.CreateReplication", createReplicationRequest, &unused, nil)
+
+						select {
+						case <-asyncRpcCall.Done:
+							if asyncRpcCall.Error != nil {
+								slog.Error("Error during Create Replication request", "error", asyncRpcCall.Error)
+							} else {
+								// Update the storage info
+								inode.rwlock.Lock()
+								storageInfo.DataNodes = append(storageInfo.DataNodes, replicaEndpoints...)
+								inode.storageInfo[blockIndex] = storageInfo
+								inode.rwlock.Unlock()
+								server.inodes[fileName] = inode
+								slog.Info("Replication request success", "fileName", fileName, "blockIndex", blockIndex, "replicaEndpoints", replicaEndpoints)
+							}
+						case <-time.After(replicateBlockTimeout):
+							slog.Error("Replication request timeout", "fileName", fileName, "blockIndex", blockIndex, "replicaEndpoints", replicaEndpoints)
+						}
+
+					}(fileName, uint(blockIndex), replicaEndpoints, storageInfo, dataNodeEndpoint)
+
+				}
+			}
+			inode.rwlock.RUnlock()
+		}
+		slog.Info("Replication monitor finished")
+	}
+}
+
 func (server *NameNode) Heartbeat(heartbeat common.Heartbeat, success *bool) error {
 	slog.Info("Receive Heartbeat", "dataNodeEndpoint", heartbeat.Endpoint)
 
-	server.inodeRWLock.Lock()
-	defer server.inodeRWLock.Unlock()
+	server.datanodeRWLock.Lock()
+	defer server.datanodeRWLock.Unlock()
 
 	// If the datanode is not registered, ignore the heartbeat
 	if _, exists := server.datanodes[heartbeat.Endpoint]; !exists {
@@ -303,6 +396,7 @@ func (server *NameNode) Heartbeat(heartbeat common.Heartbeat, success *bool) err
 }
 
 func (server *NameNode) heartbeatMonitor() {
+	slog.Info("Heartbeat monitor setup")
 	for {
 		time.Sleep(common.HEARTBEAT_MONITOR_INTERVAL) // Check periodically
 
@@ -310,6 +404,7 @@ func (server *NameNode) heartbeatMonitor() {
 		for endpoint, dataNode := range server.datanodes {
 			if !dataNode.heartbeatReceived {
 				// The datanode hasn't sent a heartbeat
+				slog.Info("DataNode missed heartbeat", "dataNodeEndpoint", endpoint)
 				server.datanodes[endpoint] = dataNodeInfo{
 					heartbeatReceived: false,
 					isAlive:           false,
@@ -326,7 +421,8 @@ func (server *NameNode) heartbeatMonitor() {
 }
 
 // Pick `num` datanodes to hold a new block
-func (server *NameNode) pickDatanodes(num uint) []string {
+// Optimized selection for load balancing
+func (server *NameNode) pickDatanodes(num uint, ignore []string) []string {
 	result := make([]string, 0, num)
 
 	iter := server.datanodeLoadRank.Iterator()
@@ -334,12 +430,24 @@ func (server *NameNode) pickDatanodes(num uint) []string {
 		if uint(len(result)) == num {
 			break
 		}
-		for endpoint := range iter.Value().(map[string]bool) {
+		for endpoint, _ := range iter.Value().(map[string]bool) {
+			// ignore datanode that is down
+			if !server.datanodes[endpoint].isAlive {
+				continue
+			}
+			// if ignore list is provided, ignore datanode in the ignore list
+			if ignore != nil && slices.Contains(ignore, endpoint) {
+				continue
+			}
 			result = append(result, endpoint)
 			if uint(len(result)) == num {
 				break
 			}
 		}
+	}
+
+	if uint(len(result)) < num {
+		slog.Warn("Not enough available DataNodes")
 	}
 
 	return result
@@ -349,7 +457,6 @@ func (server *NameNode) pickDatanodes(num uint) []string {
 // and returns (Block Name, DataNode Endpoint) pair for each block
 // If the block doesn't exist but the file exist, the version of the block will be
 // `common.MIN_VALID_VERSION_NUMBER - 1`
-// TODO: only return DataNode Endpoint ?
 func (server *NameNode) GetBlockLocations(args *common.GetBlockLocationsRequest, reply *common.GetBlockLocationsResponse) error {
 	if len(server.blockReportsReceived)-1+common.BLOCK_REPLICATION < int(server.numDataNodes) {
 		return errors.New("namenode waiting for more block reports for initialization")
@@ -391,7 +498,7 @@ func (server *NameNode) GetBlockLocations(args *common.GetBlockLocationsRequest,
 		if !(i < uint(len(inode.storageInfo))) {
 			blockInfoList = append(blockInfoList, common.BlockInfo{
 				Version:           common.MIN_VALID_VERSION_NUMBER - 1,
-				DataNodeEndpoints: server.pickDatanodes(common.BLOCK_REPLICATION),
+				DataNodeEndpoints: server.pickDatanodes(common.BLOCK_REPLICATION, nil),
 			})
 		} else {
 			// Filter out the alive storage nodes
@@ -679,8 +786,13 @@ func main() {
 	if err != nil {
 		panic(fmt.Sprintln("listen error", err))
 	}
-	http.Serve(listener, nil)
+	go http.Serve(listener, nil)
 
 	// Start the heartbeat monitor
 	go server.heartbeatMonitor()
+
+	// Start the replication monitor
+	go server.replicationMonitor()
+
+	select {}
 }

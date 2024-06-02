@@ -65,6 +65,29 @@ type WriteBlockRequest struct {
 	LeaseToken uint64
 }
 
+// requests a datanode to create the replica of an existing block
+type CreateReplicationRequest struct {
+	FileName   string
+	BlockIndex uint
+	Version    uint
+
+	// All datanodes to replicate the block to
+	ReplicaEndpoints []string
+}
+
+// the datanode receives the request and stores the block replica
+type ReplicateBlockRequest struct {
+	FileName   string
+	BlockIndex uint
+	Version    uint
+
+	Data []byte
+
+	// All datanodes to replicate the block to
+	ReplicaEndpoints []string
+	IndexInChain     uint
+}
+
 type BlockVersionBump struct {
 	BlockID          BlockIdentifier
 	Size             uint

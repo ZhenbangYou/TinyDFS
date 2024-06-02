@@ -10,6 +10,9 @@ DATANODE_DIR="datanode_data"
 # Define the logs directory
 LOG_DIR="logs"
 
+# Define the pid directory
+PID_DIR="pids"
+
 # Function to gracefully terminate processes
 terminate_processes() {
     local process_name=$1
@@ -42,5 +45,9 @@ echo "Deleted DataNode test file directory: $DATANODE_DIR"
 # Delete the logs directory
 rm -rf "$LOG_DIR"
 echo "Deleted logs directory: $LOG_DIR"
+
+# Delete the PID directory
+rm -rf "$PID_DIR"
+echo "Deleted PID directory: $PID_DIR"
 
 echo "Termination complete."
