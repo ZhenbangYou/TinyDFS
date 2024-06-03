@@ -102,6 +102,64 @@ func (server *NameNode) Exists(fileName string, exists *bool) error {
 	return nil
 }
 
+func (server *NameNode) DeleteBlockFromDataNodes(
+	blockID common.BlockIdentifier,
+	dataNodes []string,
+) {
+	for _, endpoint := range dataNodes {
+		datanodeConn, err := rpc.DialHTTP("tcp", endpoint)
+		if err != nil {
+			slog.Error("error dialing datanode", "endpoint", datanodeConn)
+			// Even if it fails, don't let client know since the future block report
+			// from the same datanode will resolve this
+			continue
+		}
+
+		// No need to wait, just let them run
+		go func(fileName string, blockIndex uint, version uint) {
+			var unused bool
+			datanodeConn.Call("DataNode.DeleteBlock", common.BlockIdentifier{
+				FileName:   fileName,
+				BlockIndex: blockIndex,
+				Version:    version,
+			}, &unused)
+		}(blockID.FileName, uint(blockID.BlockIndex), blockID.Version)
+	}
+}
+
+// Return true iff all requests to DataNodes succeed
+func (server *NameNode) TruncateBlockFromDataNodes(
+	blockID common.BlockIdentifier,
+	newBlockLength uint,
+	dataNodes []string,
+) bool {
+	var wg sync.WaitGroup
+	allSucceeded := true
+	for _, endpoint := range dataNodes {
+		datanodeConn, err := rpc.DialHTTP("tcp", endpoint)
+		if err != nil {
+			slog.Error("error dialing datanode", "endpoint", datanodeConn)
+			allSucceeded = false
+			break
+		}
+
+		wg.Add(1)
+		go func(fileName string, blockIndex uint, version uint) {
+			var unused bool
+			datanodeConn.Call("DataNode.TruncateBlock", common.TruncateBlockRequest{
+				BlockID: common.BlockIdentifier{
+					FileName:   fileName,
+					BlockIndex: blockIndex,
+					Version:    version,
+				},
+				NewBlockLength: newBlockLength}, &unused)
+			wg.Done()
+		}(blockID.FileName, uint(blockID.BlockIndex), blockID.Version)
+	}
+	wg.Wait()
+	return allSucceeded
+}
+
 // TODO: notify all the datanodes to delete the blocks
 // This RPC doesn't return anything
 func (server *NameNode) Delete(fileName string, unused *bool) error {
@@ -110,7 +168,7 @@ func (server *NameNode) Delete(fileName string, unused *bool) error {
 	server.inodeRWLock.Lock()
 	inode, exists := server.inodes[fileName]
 	delete(server.inodes, fileName)
-	defer server.inodeRWLock.Unlock()
+	server.inodeRWLock.Unlock()
 
 	if exists {
 		pipe := server.rdb.TxPipeline()
@@ -130,27 +188,101 @@ func (server *NameNode) Delete(fileName string, unused *bool) error {
 		}
 
 		for blockIndex, blockInfo := range inode.storageInfo {
-			for _, endpoint := range blockInfo.DataNodes {
-				datanodeConn, err := rpc.DialHTTP("tcp", endpoint)
-				if err != nil {
-					slog.Error("error dialing datanode", "endpoint", datanodeConn)
-					// Even if it fails, don't let client know since the future block report
-					// from the same datanode will resolve this
-					continue
-				}
-
-				// No need to wait, just let them run
-				go func(fileName string, blockIndex uint, version uint) {
-					var unused bool
-					datanodeConn.Call("DataNode.DeleteBlock", common.BlockIdentifier{
-						FileName:   fileName,
-						BlockIndex: blockIndex,
-						Version:    version,
-					}, &unused)
-				}(fileName, uint(blockIndex), blockInfo.LatestVersion)
-			}
+			server.DeleteBlockFromDataNodes(common.BlockIdentifier{
+				FileName:   fileName,
+				BlockIndex: uint(blockIndex),
+				Version:    blockInfo.LatestVersion,
+			}, blockInfo.DataNodes)
 		}
 	}
+
+	return nil
+}
+
+func (server *NameNode) Truncate(args common.TruncateRequest, unused *bool) error {
+	slog.Info("Truncate request", "file name", args.FileName, "new length", args.NewLength)
+
+	server.inodeRWLock.Lock()
+	inode, exists := server.inodes[args.FileName]
+	server.inodeRWLock.Unlock()
+
+	if !exists {
+		return errors.New("File " + args.FileName + " doesn't exist")
+	}
+
+	var oldLength uint
+	err := server.GetSize(args.FileName, &oldLength)
+	if err != nil {
+		return err
+	}
+	if args.NewLength >= oldLength {
+		return nil
+	}
+
+	oldNumBlocks := len(inode.storageInfo)
+	newNumBlocks := (args.NewLength+common.BLOCK_SIZE-1) / common.BLOCK_SIZE
+	newLastBlockSize := args.NewLength % common.BLOCK_SIZE
+	if newLastBlockSize == 0 {
+		newLastBlockSize = common.BLOCK_SIZE
+	}
+
+	newInode := inode
+
+	// Determine the block to truncate
+	// The current function will be successful iff all truncate requests to DataNodes succeed
+	if newLastBlockSize != common.BLOCK_SIZE {
+		succeeded := server.TruncateBlockFromDataNodes(
+			common.BlockIdentifier{
+				FileName:   args.FileName,
+				BlockIndex: newNumBlocks - 1,
+				Version:    inode.storageInfo[newNumBlocks-1].LatestVersion,
+			}, newLastBlockSize,
+			inode.storageInfo[newNumBlocks-1].DataNodes,
+		)
+		if !succeeded {
+			return errors.New("Truncate failed")
+		}
+
+		newInode.storageInfo[newNumBlocks-1].LatestVersion += 1
+		newInode.storageInfo[newNumBlocks-1].Size = newLastBlockSize
+	}
+
+	// Determine blocks to delete
+	for i := newNumBlocks; i < uint(oldNumBlocks); i += 1 {
+		server.DeleteBlockFromDataNodes(common.BlockIdentifier{
+			FileName:   args.FileName,
+			BlockIndex: uint(i),
+			Version:    inode.storageInfo[i].LatestVersion,
+		}, inode.storageInfo[i].DataNodes)
+	}
+
+	// Persist new info in Redis
+	pipe := server.rdb.TxPipeline()
+	if args.NewLength%common.BLOCK_SIZE != 0 {
+		err := pipe.HSet(ctx, args.FileName, newNumBlocks-1, newLastBlockSize).Err()
+		if err != nil {
+			slog.Error("Redis HSET", "error", err)
+			return err
+		}
+	}
+	for i := newNumBlocks; i < uint(oldNumBlocks); i++ {
+		err := pipe.HDel(ctx, args.FileName, fmt.Sprint(i)).Err()
+		if err != nil {
+			slog.Error("Redis HDEL", "error", err)
+			return err
+		}
+	}
+	_, err = pipe.Exec(ctx)
+	if err != nil {
+		slog.Error("Redis Transaction", "error", err)
+	}
+
+	newInode.storageInfo = newInode.storageInfo[:newNumBlocks]
+	newInode.storageInfo[newNumBlocks-1].Size = newLastBlockSize
+
+	server.inodeRWLock.Lock()
+	server.inodes[args.FileName] = newInode
+	server.inodeRWLock.Unlock()
 
 	return nil
 }
