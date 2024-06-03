@@ -496,6 +496,39 @@ func (datanode *DataNode) DeleteBlock(args common.BlockIdentifier, unused *bool)
 	return err
 }
 
+func copyFile(src, dst string) error {
+	sourceFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer sourceFile.Close()
+
+	destFile, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer destFile.Close()
+
+	_, err = io.Copy(destFile, sourceFile)
+	if err != nil {
+		return err
+	}
+
+	return destFile.Sync()
+}
+
+func (datanode *DataNode) TruncateBlock(args common.TruncateBlockRequest, unused *bool) error {
+	slog.Info("Truncate Block request", "block", args, "new block length", args.NewBlockLength)
+	oldPath := constructBlockName(args.BlockID.FileName, args.BlockID.BlockIndex, args.BlockID.Version)
+	newPath := constructBlockName(args.BlockID.FileName, args.BlockID.BlockIndex, args.BlockID.Version+1)
+	err := copyFile(oldPath, newPath)
+	if err != nil {
+		return err
+	}
+	err = os.Truncate(newPath, int64(args.NewBlockLength))
+	return err
+}
+
 // Command Line Args:
 // Args[1]: Namenode endpoint (IP:port)
 // Args[2]: Datanode endpoint (IP:port)

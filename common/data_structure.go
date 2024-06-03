@@ -65,6 +65,18 @@ type WriteBlockRequest struct {
 	LeaseToken uint64
 }
 
+// Truncate a block
+type TruncateBlockRequest struct {
+	BlockID        BlockIdentifier
+	NewBlockLength uint
+}
+
+// Truncate a file
+type TruncateRequest struct {
+	FileName  string
+	NewLength uint
+}
+
 // requests a datanode to create the replica of an existing block
 type CreateReplicationRequest struct {
 	FileName   string

@@ -60,10 +60,15 @@ func main() {
 	}
 	writeHandle.Close()
 
+	err = dfs.Truncate(*path, 13)
+	if err != nil {
+		log.Fatal("truncate fail", err)
+	}
+
 	readHandle := dfs.OpenForRead(*path)
 
 	// Read the specified portion of the file
-	data, err := readHandle.Read(15)
+	data, err := readHandle.Read(16)
 	if err == nil {
 		fmt.Println("read", string(data), "length", len(data))
 	} else {
