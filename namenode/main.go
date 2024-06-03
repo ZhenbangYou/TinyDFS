@@ -220,7 +220,7 @@ func (server *NameNode) Truncate(args common.TruncateRequest, unused *bool) erro
 	}
 
 	oldNumBlocks := len(inode.storageInfo)
-	newNumBlocks := (args.NewLength+common.BLOCK_SIZE-1) / common.BLOCK_SIZE
+	newNumBlocks := (args.NewLength + common.BLOCK_SIZE - 1) / common.BLOCK_SIZE
 	newLastBlockSize := args.NewLength % common.BLOCK_SIZE
 	if newLastBlockSize == 0 {
 		newLastBlockSize = common.BLOCK_SIZE
@@ -466,34 +466,27 @@ func (server *NameNode) replicationMonitor() {
 							return
 						}
 
-						replicateBlockTimeout :=
-							time.Millisecond*(common.BLOCK_SIZE*1024/common.NETWORK_BANDWIDTH)*3 +
-								common.RPC_TIMEOUT
-
-						slog.Info("Send replication request", "fileName", fileName, "blockIndex", blockIndex, "replicaEndpoints", replicaEndpoints, "dataNodeEndpoint", dataNodeEndpoint)
+						slog.Info("Send replication request",
+							"fileName", fileName,
+							"blockIndex", blockIndex,
+							"replicaEndpoints", replicaEndpoints,
+							"dataNodeEndpoint", dataNodeEndpoint)
 						slog.Debug("create", slog.Any("createReplicationRequest", createReplicationRequest))
 
 						var unused bool
+						err = dataNodeClient.Call("DataNode.CreateReplication", createReplicationRequest, &unused)
 
-						asyncRpcCall := dataNodeClient.Go("DataNode.CreateReplication", createReplicationRequest, &unused, nil)
-
-						select {
-						case <-asyncRpcCall.Done:
-							if asyncRpcCall.Error != nil {
-								slog.Error("Error during Create Replication request", "error", asyncRpcCall.Error)
-							} else {
-								// Update the storage info
-								inode.rwlock.Lock()
-								storageInfo.DataNodes = append(storageInfo.DataNodes, replicaEndpoints...)
-								inode.storageInfo[blockIndex] = storageInfo
-								inode.rwlock.Unlock()
-								server.inodes[fileName] = inode
-								slog.Info("Replication request success", "fileName", fileName, "blockIndex", blockIndex, "replicaEndpoints", replicaEndpoints)
-							}
-						case <-time.After(replicateBlockTimeout):
-							slog.Error("Replication request timeout", "fileName", fileName, "blockIndex", blockIndex, "replicaEndpoints", replicaEndpoints)
+						if err != nil {
+							slog.Error("Error during Create Replication request", "error", err)
+						} else {
+							// Update the storage info
+							inode.rwlock.Lock()
+							storageInfo.DataNodes = append(storageInfo.DataNodes, replicaEndpoints...)
+							inode.storageInfo[blockIndex] = storageInfo
+							inode.rwlock.Unlock()
+							server.inodes[fileName] = inode
+							slog.Info("Replication request success", "fileName", fileName, "blockIndex", blockIndex, "replicaEndpoints", replicaEndpoints)
 						}
-
 					}(fileName, uint(blockIndex), replicaEndpoints, storageInfo, dataNodeEndpoint)
 
 				}
