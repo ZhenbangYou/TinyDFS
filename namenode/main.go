@@ -430,7 +430,7 @@ func (server *NameNode) pickDatanodes(num uint, ignore []string) []string {
 		if uint(len(result)) == num {
 			break
 		}
-		for endpoint, _ := range iter.Value().(map[string]bool) {
+		for endpoint := range iter.Value().(map[string]bool) {
 			// ignore datanode that is down
 			if !server.datanodes[endpoint].isAlive {
 				continue
