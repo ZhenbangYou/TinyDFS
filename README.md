@@ -17,6 +17,9 @@ Build namenode and datanode.
 ```bash scripts/setup.sh```
 Run namenode and multiple datanodes.
 
+```bash scripts/test.sh```
+An example script to setup and test the system.
+
 ```bash scripts/terminate.sh```
 Terminate all namenode and datanodes.
 
