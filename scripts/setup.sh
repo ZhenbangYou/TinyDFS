@@ -33,6 +33,13 @@ start_namenode() {
   echo "Namenode started with PID $NAMENODE_PID"
 }
 
+kill_namenode() {
+  NAMENODE_PID=$(cat "$PID_DIR/namenode.pid")
+  kill $NAMENODE_PID
+  wait $NAMENODE_PID 2>/dev/null
+  echo "Namenode killed"
+}
+
 start_datanode() {
   local ID=$1
   local DATANODE_PID_FILE="$PID_DIR/datanode_$ID.pid"

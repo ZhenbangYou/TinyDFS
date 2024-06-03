@@ -696,7 +696,7 @@ func main() {
 	var programLevel = new(slog.LevelVar) // Info by default
 
 	if len(os.Args) == 4 {
-		logFilePath := os.Args[2]
+		logFilePath := os.Args[3]
 		// Set file permissions to allow Read and Write for the owner
 		logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 		if err != nil {
