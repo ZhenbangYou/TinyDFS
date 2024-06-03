@@ -87,6 +87,30 @@ func (dfs *DistributedFileSystem) Delete(fileName string) bool {
 	}
 }
 
+func (dfs *DistributedFileSystem) Truncate(fileName string, newLength uint) error {
+	var unused bool
+	asyncRpcCall := dfs.namenodeClient.Go("NameNode.Truncate", common.TruncateRequest{
+		FileName:  fileName,
+		NewLength: newLength,
+	}, &unused, nil)
+
+	select {
+	case <-asyncRpcCall.Done:
+		if asyncRpcCall.Error != nil {
+			slog.Error("Error during Truncate Request", "error", asyncRpcCall.Error)
+			return asyncRpcCall.Error
+		} else {
+			break
+		}
+	case <-time.After(common.RPC_TIMEOUT):
+		slog.Error("Truncate Request timeout", "DFS endpoint", dfs.endpoint, "file name", fileName)
+		return errors.New("Truncate Request timeout")
+	}
+
+	slog.Info("Truncate succeeded", "file name", fileName)
+	return nil
+}
+
 func (dfs *DistributedFileSystem) GetSize(fileName string) (uint, bool) {
 	var size uint
 	asyncRpcCall := dfs.namenodeClient.Go("NameNode.GetSize", fileName, &size, nil)
@@ -151,8 +175,6 @@ func (readHandle *ReadHandle) Read(length uint) ([]byte, error) {
 		if asyncRpcCall.Error != nil {
 			slog.Error("Error during GetBlockLocations Request", "error", asyncRpcCall.Error)
 			return nil, asyncRpcCall.Error
-		} else {
-			break
 		}
 	case <-time.After(common.RPC_TIMEOUT):
 		slog.Error("GetBlockLocations Request timeout", "DFS endpoint", readHandle.dfs.endpoint, "file name", readHandle.fileName)
@@ -166,6 +188,8 @@ func (readHandle *ReadHandle) Read(length uint) ([]byte, error) {
 	dataBuffer := make([]byte, length)
 	allSucceeded := true
 
+	actualBufferEnd := 0 // To handle rad short count
+
 	for i, blockInfo := range getBlockLocationsResponse.BlockInfoList {
 		wg.Add(1)
 
@@ -178,7 +202,7 @@ func (readHandle *ReadHandle) Read(length uint) ([]byte, error) {
 			endOffset = uint(endBlockOffset)
 		}
 
-		go func(blockInfo common.BlockInfo, blockIndex uint, beginOffset uint, endOffset uint) {
+		go func(blockInfo common.BlockInfo, blockIndex uint, beginOffset uint, endOffset uint, isLastBlock bool) {
 			defer wg.Done()
 			// Randomly choose one DataNode to read the block
 			dataNodeEndpoint := blockInfo.DataNodeEndpoints[rand.Intn(len(blockInfo.DataNodeEndpoints))]
@@ -215,13 +239,22 @@ func (readHandle *ReadHandle) Read(length uint) ([]byte, error) {
 						"Data", readBlockResponse.Data,
 						"BufferStart", bufferStart)
 					copy(dataBuffer[bufferStart:], readBlockResponse.Data)
+					if isLastBlock {
+						actualBufferEnd = len(readBlockResponse.Data) + int(beginOffset)
+					}
 				}
 			case <-time.After(common.READ_BLOCK_TIMEOUT):
 				slog.Error("ReadBlock RPC timeout", "DataNode Endpoint", dataNodeEndpoint)
 				allSucceeded = false
 			}
 
-		}(blockInfo, beginBlock+uint(i), beginOffset, endOffset)
+		}(
+			blockInfo,
+			beginBlock+uint(i),
+			beginOffset,
+			endOffset,
+			i == len(getBlockLocationsResponse.BlockInfoList)-1,
+		)
 	}
 
 	wg.Wait()
@@ -230,6 +263,8 @@ func (readHandle *ReadHandle) Read(length uint) ([]byte, error) {
 		slog.Error("Failed to read all blocks")
 		return nil, errors.New("failed to read all blocks")
 	}
+
+	dataBuffer = dataBuffer[:actualBufferEnd]
 
 	readHandle.offset += uint(len(dataBuffer))
 
@@ -285,14 +320,25 @@ func (writeHandle *WriteHandle) Write(data []byte) error {
 	}
 
 	var getBlockLocationsResponse common.GetBlockLocationsResponse
-	err := writeHandle.dfs.namenodeClient.Call("NameNode.GetBlockLocations",
-		getBlockLocationsRequest, &getBlockLocationsResponse)
-	if err != nil {
-		slog.Error("Error during GetBlockLocations Request", "error", err)
-		return err
+	asyncRpcCall := writeHandle.dfs.namenodeClient.Go("NameNode.GetBlockLocations",
+		getBlockLocationsRequest, &getBlockLocationsResponse, nil)
+
+	select {
+	case <-asyncRpcCall.Done:
+		if asyncRpcCall.Error != nil {
+			slog.Error("Error during GetBlockLocations Request", "error", asyncRpcCall.Error)
+			return asyncRpcCall.Error
+		}
+	case <-time.After(common.RPC_TIMEOUT):
+		slog.Error("GetBlockLocations Request timeout",
+			"DFS endpoint", writeHandle.dfs.endpoint,
+			"file name", writeHandle.fileName)
+		return errors.New("GetBlockLocations Request timeout")
 	}
 
-	slog.Info("GetBlockLocations succeeded", "file", fileName, "BlockInfoList", getBlockLocationsResponse.BlockInfoList)
+	slog.Info("GetBlockLocations succeeded",
+		"file", fileName,
+		"BlockInfoList", getBlockLocationsResponse.BlockInfoList)
 
 	go func() {
 		time.Sleep(common.LEASE_RENEWAL_INTERVAL)
