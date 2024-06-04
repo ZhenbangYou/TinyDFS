@@ -69,7 +69,7 @@ func (dfs *DistributedFileSystem) Exists(fileName string) bool {
 
 // Returns whether the request succeeds, which does nothing with whether the file specified
 // by `fileName` exists when this request is issued
-func (dfs *DistributedFileSystem) Delete(fileName string) bool {
+func (dfs *DistributedFileSystem) Delete(fileName string) error {
 	var success bool
 	asyncRpcCall := dfs.namenodeClient.Go("NameNode.Delete", fileName, &success, nil)
 
@@ -77,13 +77,13 @@ func (dfs *DistributedFileSystem) Delete(fileName string) bool {
 	case <-asyncRpcCall.Done:
 		if asyncRpcCall.Error != nil {
 			slog.Error("Delete RPC", "error", asyncRpcCall.Error)
-			return false
+			return asyncRpcCall.Error
 		} else {
-			return true
+			return nil
 		}
 	case <-time.After(common.RPC_TIMEOUT):
 		slog.Error("Delete RPC timeout", "DFS endpoint", dfs.endpoint, "file name", fileName)
-		return false
+		return errors.New("Delete RPC timeout")
 	}
 }
 
