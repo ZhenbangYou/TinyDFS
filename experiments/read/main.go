@@ -46,6 +46,7 @@ func main() {
 				err = writeHandle.Write(make([]byte, common.BLOCK_SIZE))
 			}
 			cur_offset += common.BLOCK_SIZE
+			writeHandle.Seek(cur_offset)
 		}
 	}
 
