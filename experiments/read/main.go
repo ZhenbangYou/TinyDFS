@@ -41,8 +41,9 @@ func main() {
 		cur_offset := uint(0)
 		for cur_offset < length {
 			err = writeHandle.Write(make([]byte, common.BLOCK_SIZE))
-			if err != nil {
-				log.Fatal(err)
+			for err != nil {
+				// log.Fatal(err)
+				err = writeHandle.Write(make([]byte, common.BLOCK_SIZE))
 			}
 			cur_offset += common.BLOCK_SIZE
 		}
