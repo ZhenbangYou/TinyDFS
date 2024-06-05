@@ -38,9 +38,13 @@ func main() {
 			log.Fatal(err)
 		}
 		writeHandle := dfs.OpenForWrite(*path)
-		err = writeHandle.Write(make([]byte, length))
-		if err != nil {
-			log.Fatal(err)
+		cur_offset := uint(0)
+		for cur_offset < length {
+			err = writeHandle.Write(make([]byte, common.BLOCK_SIZE))
+			if err != nil {
+				log.Fatal(err)
+			}
+			cur_offset += common.BLOCK_SIZE
 		}
 	}
 
