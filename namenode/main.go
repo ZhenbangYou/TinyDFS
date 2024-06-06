@@ -258,12 +258,18 @@ func (server *NameNode) Truncate(args common.TruncateRequest, unused *bool) erro
 
 	// Persist new info in Redis
 	pipe := server.rdb.TxPipeline()
-	if args.NewLength%common.BLOCK_SIZE != 0 {
+	if newLastBlockSize != common.BLOCK_SIZE {
 		err := pipe.HSet(ctx, args.FileName, newNumBlocks-1, newLastBlockSize).Err()
 		if err != nil {
 			slog.Error("Redis HSET", "error", err)
 			return err
 		}
+
+		server.DeleteBlockFromDataNodes(common.BlockIdentifier{
+			FileName:   args.FileName,
+			BlockIndex: newNumBlocks - 1,
+			Version:    newInode.storageInfo[newNumBlocks-1].LatestVersion - 1,
+		}, inode.storageInfo[newNumBlocks-1].DataNodes)
 	}
 	for i := newNumBlocks; i < uint(oldNumBlocks); i++ {
 		err := pipe.HDel(ctx, args.FileName, fmt.Sprint(i)).Err()
