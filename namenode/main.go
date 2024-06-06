@@ -53,9 +53,10 @@ type NameNode struct {
 	datanodes      map[string]dataNodeInfo
 	datanodeRWLock *sync.RWMutex // The RWLock for the datanodes
 
-	datanodeLoadRank *treemap.Map   // block count (int) -> hashset of endpoints
-	datanodeLoad     map[string]int // endpoint -> #blocks it has
-	datanodeLoadLock *sync.Mutex
+	datanodeLoadRank  *treemap.Map   // block count (int) -> hashset of endpoints
+	datanodeLoad      map[string]int // endpoint -> #blocks it has
+	datanodeLoadLock  *sync.Mutex
+	nextDataNodeIndex uint
 
 	rdb *redis.Client
 	// structure of the Redis DB:
@@ -550,7 +551,30 @@ func (server *NameNode) heartbeatMonitor() {
 func (server *NameNode) pickDatanodes(num uint, ignore []string) []string {
 	result := make([]string, 0, num)
 
-	iter := server.datanodeLoadRank.Iterator()
+	server.datanodeRWLock.RLock()
+	var dataNodeList []string
+	for endpoint := range server.datanodes {
+		dataNodeList = append(dataNodeList, endpoint)
+	}
+	server.datanodeRWLock.RUnlock()
+	for {
+		endpoint := dataNodeList[server.nextDataNodeIndex%uint(len(dataNodeList))]
+		// ignore datanode that is down
+		if !server.datanodes[endpoint].isAlive {
+			continue
+		}
+		// if ignore list is provided, ignore datanode in the ignore list
+		if ignore != nil && slices.Contains(ignore, endpoint) {
+			continue
+		}
+		result = append(result, endpoint)
+		if uint(len(result)) == num {
+			break
+		}
+		server.nextDataNodeIndex += 1
+	}
+
+	/*iter := server.datanodeLoadRank.Iterator()
 	for iter.Next() {
 		if uint(len(result)) == num {
 			break
@@ -569,7 +593,7 @@ func (server *NameNode) pickDatanodes(num uint, ignore []string) []string {
 				break
 			}
 		}
-	}
+	}*/
 
 	if uint(len(result)) < num {
 		slog.Warn("Not enough available DataNodes")
