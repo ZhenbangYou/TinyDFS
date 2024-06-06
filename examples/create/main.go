@@ -23,8 +23,8 @@ func main() {
 	exists := dfs.Exists(path)
 	fmt.Println("exists after create", exists)
 
-	size, ok := dfs.GetSize(path)
-	if ok {
+	size, err := dfs.GetSize(path)
+	if err != nil {
 		fmt.Println("file attributes", size)
 	}
 
