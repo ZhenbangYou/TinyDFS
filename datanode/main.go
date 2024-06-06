@@ -229,7 +229,6 @@ func (datanode *DataNode) ReadBlock(args common.ReadBlockRequest, response *comm
 // written to the distributed file system. However, even if this RPC returns an error, the write
 // may still be successful, e.g., the error may be due to the lost of the reply from datanode to client
 func (datanode *DataNode) WriteBlock(args common.WriteBlockRequest, unused *bool) error {
-	slog.Info("WriteBlock request", "block info", args)
 
 	curPath := constructBlockName(args.BlockID.FileName, args.BlockID.BlockIndex, args.BlockID.Version)
 	tmpPath := curPath + ".tmp"
