@@ -227,6 +227,8 @@ func (readHandle *ReadHandle) Read(length uint) ([]byte, error) {
 
 			asyncRpcCall := dataNodeClient.Go("DataNode.ReadBlock", readBlockRequest, &readBlockResponse, nil)
 
+			readBlockTimeout := 3 * (time.Millisecond*(common.BLOCK_SIZE*1024/common.NETWORK_BANDWIDTH) + common.RPC_TIMEOUT)
+
 			select {
 			case <-asyncRpcCall.Done:
 				if asyncRpcCall.Error != nil {
@@ -243,7 +245,7 @@ func (readHandle *ReadHandle) Read(length uint) ([]byte, error) {
 						actualBufferEnd = len(readBlockResponse.Data) + int(beginOffset)
 					}
 				}
-			case <-time.After(common.READ_BLOCK_TIMEOUT):
+			case <-time.After(readBlockTimeout):
 				slog.Error("ReadBlock RPC timeout", "DataNode Endpoint", dataNodeEndpoint)
 				allSucceeded = false
 			}
@@ -396,8 +398,7 @@ func (writeHandle *WriteHandle) Write(data []byte) error {
 			asyncRpcCall := dataNodeClient.Go("DataNode.WriteBlock", writeBlockRequest, &unused, nil)
 
 			writeBlockTimeout :=
-				time.Millisecond*(common.BLOCK_SIZE*1024/common.NETWORK_BANDWIDTH)*3 +
-					common.RPC_TIMEOUT*(common.BLOCK_REPLICATION+1)
+				(time.Millisecond*(common.BLOCK_SIZE*1024/common.NETWORK_BANDWIDTH) + common.RPC_TIMEOUT) * (common.BLOCK_REPLICATION + 1)
 
 			select {
 			case <-asyncRpcCall.Done:

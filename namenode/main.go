@@ -448,6 +448,11 @@ func (server *NameNode) replicationMonitor() {
 						storageInfo.DataNodes,
 					)
 
+					if len(replicaEndpoints) == 0 {
+						slog.Error("No available datanodes for replication", "fileName", fileName, "blockIndex", blockIndex)
+						continue
+					}
+
 					// Schedule replication: send a replication request to the datanode
 					go func(fileName string, blockIndex uint, replicaEndpoints []string, storageInfo blockStorageInfo, dataNodeEndpoint string) {
 						server.datanodeRWLock.RLock()

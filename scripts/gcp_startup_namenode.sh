@@ -55,6 +55,8 @@ fi
 # Navigate to the TinyDFS directory
 cd ${HOME_DIR}/TinyDFS
 
+git config --global --add safe.directory ${HOME_DIR}/TinyDFS
+
 # Pull the latest changes from the main branch
 git pull origin main
 
@@ -72,6 +74,9 @@ LOG_FILE="logs/namenode.log"
 if [ -f "${LOG_FILE}" ]; then
     rm ${LOG_FILE}
 fi
+
+# Kill any existing namenode processes
+pkill -SIGTERM -f "namenode"
 
 # Start the namenode
 ./namenode/namenode ${NAMENODE_IP}:8000 5 ${LOG_FILE}

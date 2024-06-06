@@ -1,5 +1,5 @@
-DATANODE_ID=1
-HOME_DIR="/home/xiezhiyu32768"
+DATANODE_ID=5
+set $HOME="/home/xiezhiyu32768"
 
 # Update package list if not updated recently
 sudo apt update
@@ -8,8 +8,8 @@ sudo apt update
 if ! /usr/local/go/bin/go version &> /dev/null; then
     wget https://golang.org/dl/go1.22.2.linux-amd64.tar.gz
     sudo tar -C /usr/local -xzf go1.22.2.linux-amd64.tar.gz
-    echo 'export PATH=$PATH:/usr/local/go/bin' >> ${HOME_DIR}/.profile
-    source ${HOME_DIR}/.profile
+    echo 'export PATH=$PATH:/usr/local/go/bin' >> ${HOME}/.profile
+    source ${HOME}/.profile
     if go version; then
         echo "Go has been downloaded successfully"
     else
@@ -17,7 +17,7 @@ if ! /usr/local/go/bin/go version &> /dev/null; then
         exit 1
     fi
 else
-    source ${HOME_DIR}/.profile
+    source ${HOME}/.profile
     echo "Go is already installed"
 fi
 
@@ -48,8 +48,8 @@ else
 fi
 
 # Clone the TinyDFS repository if it doesn't exist
-if [ ! -d "${HOME_DIR}/TinyDFS" ]; then
-    cd ${HOME_DIR}
+if [ ! -d "${HOME}/TinyDFS" ]; then
+    cd ${HOME}
     git clone https://github.com/ZhenbangYou/TinyDFS.git
     echo "Downloaded Github Repo."
 else
@@ -57,7 +57,9 @@ else
 fi
 
 # Navigate to the TinyDFS directory
-cd ${HOME_DIR}/TinyDFS
+cd ${HOME}/TinyDFS
+
+git config --global --add safe.directory ${HOME}/TinyDFS
 
 # Pull the latest changes from the main branch
 git pull origin main
@@ -78,6 +80,10 @@ if [ -f "${LOG_FILE}" ]; then
     rm ${LOG_FILE}
 fi
 
+# Kill any existing datanode processes
+pkill -SIGTERM -f "datanode"
+
 # Start the datanode
 cd data
 ../datanode/datanode ${NAMENODE_IP}:8000 ${DATANODE_IP}:5000 ${LOG_FILE}
+echo "Datanode ${DATANODE_ID} started with IP: ${DATANODE_IP}"
