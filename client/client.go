@@ -111,7 +111,7 @@ func (dfs *DistributedFileSystem) Truncate(fileName string, newLength uint) erro
 	return nil
 }
 
-func (dfs *DistributedFileSystem) GetSize(fileName string) (uint, bool) {
+func (dfs *DistributedFileSystem) GetSize(fileName string) (uint, error) {
 	var size uint
 	asyncRpcCall := dfs.namenodeClient.Go("NameNode.GetSize", fileName, &size, nil)
 
@@ -119,13 +119,13 @@ func (dfs *DistributedFileSystem) GetSize(fileName string) (uint, bool) {
 	case <-asyncRpcCall.Done:
 		if asyncRpcCall.Error != nil {
 			slog.Error("GetSize RPC", "error", asyncRpcCall.Error)
-			return 0, false
+			return 0, asyncRpcCall.Error
 		} else {
-			return size, true
+			return size, nil
 		}
 	case <-time.After(common.RPC_TIMEOUT):
 		slog.Error("GetAttributes RPC timeout", "DFS endpoint", dfs.endpoint, "file name", fileName)
-		return 0, false
+		return 0, errors.New("GetSize timeout")
 	}
 }
 
