@@ -27,8 +27,8 @@ func ConnectDistributedFileSystem(endpoint string) (DistributedFileSystem, error
 	return DistributedFileSystem{endpoint: endpoint, namenodeClient: namenodeClient}, nil
 }
 
-func (dfs *DistributedFileSystem) Close() {
-	dfs.namenodeClient.Close()
+func (dfs *DistributedFileSystem) Close() error {
+	return dfs.namenodeClient.Close()
 }
 
 func (dfs *DistributedFileSystem) Create(fileName string) error {
