@@ -27,7 +27,10 @@ func main() {
 	defer dfs.Close()
 
 	// Check if the file exists
-	exists := dfs.Exists(*path)
+	exists, err := dfs.Exists(*path)
+	if err != nil {
+		log.Fatal(err)
+	}
 	fmt.Println("exists", exists)
 
 	readHandle := dfs.OpenForRead(*path)

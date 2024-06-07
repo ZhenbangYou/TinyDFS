@@ -27,7 +27,11 @@ func main() {
 	defer dfs.Close()
 
 	// Create a new file for clients
-	if dfs.Exists(*path) {
+	exists, err := dfs.Exists(*path)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if exists {
 		dfs.Delete(*path)
 	}
 	err = dfs.Create(*path)
