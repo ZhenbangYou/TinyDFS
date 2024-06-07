@@ -24,7 +24,11 @@ func main() {
 	}
 	defer dfs.Close()
 
-	if dfs.Exists(*path) {
+	exists, err := dfs.Exists(*path)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if exists {
 		dfs.Delete(*path)
 	}
 

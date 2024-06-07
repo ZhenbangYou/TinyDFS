@@ -49,21 +49,21 @@ func (dfs *DistributedFileSystem) Create(fileName string) error {
 	}
 }
 
-func (dfs *DistributedFileSystem) Exists(fileName string) bool {
-	var success bool
-	asyncRpcCall := dfs.namenodeClient.Go("NameNode.Exists", fileName, &success, nil)
+func (dfs *DistributedFileSystem) Exists(fileName string) (bool, error) {
+	var exists bool
+	asyncRpcCall := dfs.namenodeClient.Go("NameNode.Exists", fileName, &exists, nil)
 
 	select {
 	case <-asyncRpcCall.Done:
 		if asyncRpcCall.Error != nil {
 			slog.Error("Exists RPC", "error", asyncRpcCall.Error)
-			return false
+			return false, asyncRpcCall.Error
 		} else {
-			return success
+			return exists, nil
 		}
 	case <-time.After(common.RPC_TIMEOUT):
 		slog.Error("Exists RPC timeout", "DFS endpoint", dfs.endpoint, "file name", fileName)
-		return false
+		return false, errors.New("Exists timeout")
 	}
 }
 

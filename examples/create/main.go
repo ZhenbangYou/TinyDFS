@@ -20,7 +20,7 @@ func main() {
 	}
 	fmt.Println("create succeeded")
 
-	exists := dfs.Exists(path)
+	exists, _ := dfs.Exists(path)
 	fmt.Println("exists after create", exists)
 
 	size, err := dfs.GetSize(path)
@@ -29,6 +29,6 @@ func main() {
 	}
 
 	dfs.Delete(path)
-	exists = dfs.Exists(path)
+	exists, _ = dfs.Exists(path)
 	fmt.Println("exists after delete", exists)
 }
