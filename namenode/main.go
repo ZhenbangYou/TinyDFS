@@ -627,10 +627,15 @@ func (server *NameNode) GetBlockLocations(args *common.GetBlockLocationsRequest,
 	var blockInfoList []common.BlockInfo
 	for i := args.BeginBlock; i < args.EndBlock; i++ {
 		if !(i < uint(len(inode.storageInfo))) {
-			blockInfoList = append(blockInfoList, common.BlockInfo{
-				Version:           common.MIN_VALID_VERSION_NUMBER - 1,
-				DataNodeEndpoints: server.pickDatanodes(common.BLOCK_REPLICATION, nil),
-			})
+			// New blocks
+
+			if args.LeaseToken > 0 {
+				blockInfoList = append(blockInfoList, common.BlockInfo{
+					Version:           common.MIN_VALID_VERSION_NUMBER - 1,
+					DataNodeEndpoints: server.pickDatanodes(common.BLOCK_REPLICATION, nil),
+				})
+			}
+			// If this request is for Read, the reply should not contain out-of-range blocks
 		} else {
 			// Filter out the alive storage nodes
 			var hasDeadNode bool = false
